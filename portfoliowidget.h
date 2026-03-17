@@ -116,6 +116,8 @@ private:
 
   QChart *portfolioChart;
   QChartView *chartView;
+  QWidget *chartContainer;
+  QPushButton *toggleChartButton;
   QLineSeries *valueSeries;
   QLineSeries *costSeries;
   QDateTimeAxis *axisX;

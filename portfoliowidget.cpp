@@ -50,6 +50,15 @@ PortfolioWidget::PortfolioWidget(PriceEmpireAPI *api, SteamAPI *steamApi,
       loadingDialog(nullptr) {
   setupUI();
 
+  // These widgets are kept alive for legacy slots but are no longer shown in
+  // the UI
+  steamIdEdit = new QLineEdit(this);
+  steamLoginButton = new QPushButton(this);
+  importSteamButton = new QPushButton(this);
+  steamIdEdit->hide();
+  steamLoginButton->hide();
+  importSteamButton->hide();
+
   connect(steamApi, &SteamAPI::inventoryFetched, this,
           &PortfolioWidget::onSteamInventoryFetched);
   connect(steamApi, &SteamAPI::inventoryError, this,
@@ -91,8 +100,12 @@ PortfolioWidget::~PortfolioWidget() {
 
 void PortfolioWidget::setupUI() {
   QVBoxLayout *mainLayout = new QVBoxLayout(this);
+  mainLayout->setSpacing(6);
+  mainLayout->setContentsMargins(8, 8, 8, 8);
 
+  // Portfolio selector row
   QHBoxLayout *portfolioSelectLayout = new QHBoxLayout();
+  portfolioSelectLayout->setSpacing(4);
 
   QLabel *portfolioLabel = new QLabel("Portfolio:", this);
   portfolioComboBox = new QComboBox(this);
@@ -102,44 +115,74 @@ void PortfolioWidget::setupUI() {
   deletePortfolioButton = new QPushButton("Delete", this);
   renamePortfolioButton = new QPushButton("Rename", this);
 
+  for (auto *btn : {createPortfolioButton, renamePortfolioButton, deletePortfolioButton})
+    btn->setFixedHeight(26);
+
   portfolioSelectLayout->addWidget(portfolioLabel);
   portfolioSelectLayout->addWidget(portfolioComboBox, 1);
   portfolioSelectLayout->addWidget(createPortfolioButton);
   portfolioSelectLayout->addWidget(renamePortfolioButton);
   portfolioSelectLayout->addWidget(deletePortfolioButton);
-
   mainLayout->addLayout(portfolioSelectLayout);
 
-  QSplitter *splitter = new QSplitter(Qt::Vertical, this);
+  // Stats bar
+  QWidget *statsBar = new QWidget(this);
+  statsBar->setStyleSheet(
+      "QWidget { background: #1e2130; border: 1px solid #373a48; border-radius: 6px; }"
+      "QLabel  { border: none; background: transparent; }");
+  QHBoxLayout *statsLayout = new QHBoxLayout(statsBar);
+  statsLayout->setContentsMargins(12, 6, 12, 6);
+  statsLayout->setSpacing(24);
 
-  QWidget *topWidget = new QWidget(splitter);
-  QVBoxLayout *topLayout = new QVBoxLayout(topWidget);
-  topLayout->setContentsMargins(0, 0, 0, 0);
+  auto makeStatPair = [&](const QString &title) -> QLabel * {
+    QVBoxLayout *col = new QVBoxLayout();
+    col->setSpacing(1);
+    QLabel *titleLbl = new QLabel(title, statsBar);
+    titleLbl->setStyleSheet("color: #888; font-size: 10px;");
+    QLabel *valueLbl = new QLabel(QString::fromUtf8("\xe2\x80\x94"), statsBar);
+    valueLbl->setStyleSheet("color: #e0e0e0; font-size: 14px; font-weight: bold;");
+    col->addWidget(titleLbl);
+    col->addWidget(valueLbl);
+    statsLayout->addLayout(col);
+    return valueLbl;
+  };
 
-  portfolioTable = new QTableWidget(topWidget);
+  totalInvestmentLabel = makeStatPair("INVESTED");
+  currentValueLabel    = makeStatPair("VALUE");
+  totalProfitLabel     = makeStatPair("PROFIT / LOSS");
+  roiLabel             = makeStatPair("ROI");
+  statsLayout->addStretch();
+  mainLayout->addWidget(statsBar);
+
+  // Portfolio table
+  portfolioTable = new QTableWidget(this);
   portfolioTable->setColumnCount(8);
   portfolioTable->setHorizontalHeaderLabels({"Skin Name", "Condition", "Float",
                                              "Qty", "Buy Price", "Current",
                                              "Profit/Loss", "ROI %"});
-  portfolioTable->horizontalHeader()->setSectionResizeMode(
-      QHeaderView::Stretch);
+  portfolioTable->horizontalHeader()->setSectionResizeMode(QHeaderView::Stretch);
   portfolioTable->setSelectionBehavior(QAbstractItemView::SelectRows);
   portfolioTable->setEditTriggers(QAbstractItemView::NoEditTriggers);
   portfolioTable->setSortingEnabled(true);
+  portfolioTable->setMinimumHeight(180);
+  mainLayout->addWidget(portfolioTable, 1);
 
-  topLayout->addWidget(portfolioTable);
-
+  // Table action buttons
   QHBoxLayout *buttonLayout = new QHBoxLayout();
+  buttonLayout->setSpacing(4);
 
-  addButton = new QPushButton("Add Item", topWidget);
-  removeButton = new QPushButton("Remove", topWidget);
-  editButton = new QPushButton("Edit", topWidget);
-  exportButton = new QPushButton("Export CSV", topWidget);
-  importButton = new QPushButton("Import CSV", topWidget);
-  refreshButton = new QPushButton("Refresh Prices", topWidget);
+  addButton     = new QPushButton("Add Item", this);
+  removeButton  = new QPushButton("Remove", this);
+  editButton    = new QPushButton("Edit", this);
+  exportButton  = new QPushButton("Export CSV", this);
+  importButton  = new QPushButton("Import CSV", this);
+  refreshButton = new QPushButton("Refresh Prices", this);
 
   removeButton->setEnabled(false);
   editButton->setEnabled(false);
+
+  for (auto *btn : {addButton, removeButton, editButton, exportButton, importButton, refreshButton})
+    btn->setFixedHeight(26);
 
   buttonLayout->addWidget(addButton);
   buttonLayout->addWidget(removeButton);
@@ -148,98 +191,75 @@ void PortfolioWidget::setupUI() {
   buttonLayout->addWidget(importButton);
   buttonLayout->addWidget(exportButton);
   buttonLayout->addWidget(refreshButton);
+  mainLayout->addLayout(buttonLayout);
 
-  topLayout->addLayout(buttonLayout);
-
-  QWidget *bottomWidget = new QWidget(splitter);
-  QVBoxLayout *bottomLayout = new QVBoxLayout(bottomWidget);
-  bottomLayout->setContentsMargins(0, 0, 0, 0);
-
-  // Stats row: stat labels on the left, Steam import button on the right
-  QHBoxLayout *statsAndSteam = new QHBoxLayout();
-
-  // Steam GC Import panel
-  QGroupBox *steamGroup = new QGroupBox("Steam Import", bottomWidget);
+  // Steam Import panel
+  QGroupBox *steamGroup = new QGroupBox("Steam Import", this);
+  steamGroup->setStyleSheet(
+      "QGroupBox { font-size: 11px; color: #aaa; border: 1px solid #373a48;"
+      "            border-radius: 5px; margin-top: 6px; padding-top: 4px; }"
+      "QGroupBox::title { subcontrol-origin: margin; left: 8px; top: 2px; }");
   QVBoxLayout *steamLayout = new QVBoxLayout(steamGroup);
+  steamLayout->setContentsMargins(8, 4, 8, 6);
+  steamLayout->setSpacing(4);
 
   gcStatusLabel = new QLabel("Not connected", steamGroup);
-  steamStatusLabel = gcStatusLabel; // alias so old slots don't crash
-  gcStatusLabel->setWordWrap(true);
+  steamStatusLabel = gcStatusLabel;
+  gcStatusLabel->setStyleSheet("color: #888; font-size: 11px;");
   steamLayout->addWidget(gcStatusLabel);
 
-  gcLoginButton = new QPushButton("Sign in with Steam QR", steamGroup);
-  gcLoginButton->setFixedHeight(32);
-  steamLayout->addWidget(gcLoginButton);
+  QHBoxLayout *steamBtnRow = new QHBoxLayout();
+  steamBtnRow->setSpacing(4);
 
+  gcLoginButton  = new QPushButton("Sign in via Steam QR", steamGroup);
   gcImportButton = new QPushButton("Import Inventory", steamGroup);
   gcImportButton->setEnabled(false);
-  gcImportButton->setFixedHeight(32);
-  steamLayout->addWidget(gcImportButton);
+  gcImportButton->hide(); // hidden until logged in
 
+  for (auto *btn : {gcLoginButton, gcImportButton})
+    btn->setFixedHeight(24);
+
+  steamBtnRow->addWidget(gcLoginButton);
+  steamBtnRow->addWidget(gcImportButton);
+  steamBtnRow->addStretch();
+  steamLayout->addLayout(steamBtnRow);
+
+  // Storage unit row -- hidden until inventory received with containers
   QHBoxLayout *storageLayout = new QHBoxLayout();
-  gcStorageUnitCombo = new QComboBox(steamGroup);
+  storageLayout->setSpacing(4);
+  gcStorageUnitCombo   = new QComboBox(steamGroup);
   gcStorageUnitCombo->setEnabled(false);
   gcStorageUnitCombo->setPlaceholderText("No storage units");
-  gcStorageUnitButton = new QPushButton("Import Unit", steamGroup);
+  gcStorageUnitButton  = new QPushButton("Import Unit", steamGroup);
   gcStorageUnitButton->setEnabled(false);
+  gcStorageUnitButton->setFixedHeight(24);
+  gcStorageUnitCombo->hide();
+  gcStorageUnitButton->hide();
   storageLayout->addWidget(gcStorageUnitCombo, 1);
   storageLayout->addWidget(gcStorageUnitButton);
   steamLayout->addLayout(storageLayout);
 
-  statsAndSteam->addWidget(steamGroup);
+  mainLayout->addWidget(steamGroup);
 
-  bottomLayout->addLayout(statsAndSteam);
+  // Chart toggle button
+  toggleChartButton = new QPushButton(QString::fromUtf8("\xe2\x96\xb6  Show Chart"), this);
+  toggleChartButton->setCheckable(true);
+  toggleChartButton->setChecked(false);
+  toggleChartButton->setFixedHeight(26);
+  toggleChartButton->setStyleSheet(
+      "QPushButton { text-align: left; padding-left: 8px; background: #1e2130;"
+      "              border: 1px solid #373a48; border-radius: 5px; color: #bbb; font-size: 11px; }"
+      "QPushButton:checked { background: #252840; color: #e0e0e0; }"
+      "QPushButton:hover   { background: #252840; }");
+  mainLayout->addWidget(toggleChartButton);
 
-  // Wire up the Steam import button to open a compact dialog
-  steamCompanion = new SteamCompanion(this);
+  // Chart container (collapsed by default)
+  chartContainer = new QWidget(this);
+  chartContainer->hide();
+  QVBoxLayout *chartContainerLayout = new QVBoxLayout(chartContainer);
+  chartContainerLayout->setContentsMargins(0, 0, 0, 0);
 
-  connect(steamCompanion, &SteamCompanion::qrCodeReady, this,
-          [this](const QString &url) {
-            QRLoginDialog *dlg = new QRLoginDialog(this);
-            dlg->setQRUrl(url);
-            connect(steamCompanion, &SteamCompanion::qrScanned, dlg, [dlg]() {
-              dlg->setStatus("QR scanned! Approve in Steam app...");
-            });
-            connect(steamCompanion, &SteamCompanion::loggedIn, dlg,
-                    [dlg](const QString &) { dlg->markSuccess(); });
-            dlg->exec();
-            dlg->deleteLater();
-          });
-
-  connect(steamCompanion, &SteamCompanion::loggedIn, this,
-          [this](const QString &steamId) {
-            gcStatusLabel->setText(QString("Logged in (%1)").arg(steamId));
-            gcStatusLabel->setStyleSheet("color: green;");
-          });
-
-  connect(steamCompanion, &SteamCompanion::gcReady, this, [this]() {
-    gcImportButton->setEnabled(true);
-    gcStatusLabel->setText("Connected to CS2 GC — ready to import.");
-  });
-
-  connect(steamCompanion, &SteamCompanion::statusMessage, this,
-          [this](const QString &msg) { gcStatusLabel->setText(msg); });
-
-  connect(steamCompanion, &SteamCompanion::errorOccurred, this,
-          [this](const QString &err) {
-            gcStatusLabel->setText("Error: " + err);
-            gcStatusLabel->setStyleSheet("color: red;");
-            gcLoginButton->setEnabled(true);
-          });
-
-  connect(steamCompanion, &SteamCompanion::inventoryReceived, this,
-          &PortfolioWidget::onGCInventoryReceived);
-  connect(steamCompanion, &SteamCompanion::storageUnitReceived, this,
-          &PortfolioWidget::onGCStorageUnitReceived);
-
-  connect(gcLoginButton, &QPushButton::clicked, this,
-          &PortfolioWidget::onGCLoginClicked);
-  connect(gcImportButton, &QPushButton::clicked, this,
-          &PortfolioWidget::onGCImportClicked);
-  connect(gcStorageUnitButton, &QPushButton::clicked, this,
-          &PortfolioWidget::onGCStorageUnitClicked);
-
-  // -- Chart setup --
+  // Chart setup
   portfolioChart = new QChart();
   portfolioChart->setTitle("Portfolio Value Over Time");
   portfolioChart->setTitleFont(QFont("Segoe UI", 11, QFont::Bold));
@@ -250,20 +270,17 @@ void PortfolioWidget::setupUI() {
   portfolioChart->legend()->setFont(QFont("Segoe UI", 9));
   portfolioChart->legend()->setLabelColor(QColor(200, 200, 200));
 
-  // Dark chart background
   portfolioChart->setBackgroundBrush(QBrush(QColor(28, 30, 38)));
   portfolioChart->setBackgroundPen(QPen(QColor(55, 58, 72), 1));
   portfolioChart->setPlotAreaBackgroundBrush(QBrush(QColor(22, 24, 30)));
   portfolioChart->setPlotAreaBackgroundVisible(true);
 
-  // Value series (green gradient area)
   valueSeries = new QLineSeries();
   valueSeries->setName("Total Value");
   QPen valuePen(QColor(56, 200, 120));
   valuePen.setWidth(2);
   valueSeries->setPen(valuePen);
 
-  // Cost series (blue gradient area)
   costSeries = new QLineSeries();
   costSeries->setName("Total Cost (Buy-In)");
   QPen costPen(QColor(90, 155, 230));
@@ -307,19 +324,23 @@ void PortfolioWidget::setupUI() {
 
   chartView = new QChartView(portfolioChart);
   chartView->setRenderHint(QPainter::Antialiasing);
-  chartView->setMinimumHeight(350);
+  chartView->setMinimumHeight(300);
   chartView->setStyleSheet("background: transparent;");
+  chartContainerLayout->addWidget(chartView);
+  mainLayout->addWidget(chartContainer);
 
-  bottomLayout->addWidget(chartView, 1);
+  connect(toggleChartButton, &QPushButton::toggled, this, [this](bool checked) {
+    if (checked) {
+      chartContainer->show();
+      toggleChartButton->setText(QString::fromUtf8("\xe2\x96\xbc  Hide Chart"));
+      updateChart();
+    } else {
+      chartContainer->hide();
+      toggleChartButton->setText(QString::fromUtf8("\xe2\x96\xb6  Show Chart"));
+    }
+  });
 
-  splitter->addWidget(topWidget);
-  splitter->addWidget(bottomWidget);
-  splitter->setStretchFactor(0, 2);
-  splitter->setStretchFactor(1, 3); // give more height to bottom (chart) pane
-
-  mainLayout->addWidget(splitter);
-
-  // Price check queue panel -- hidden by default, shown when a job is active
+  // Price-check queue bar (hidden until active)
   queueGroup = new QWidget(this);
   QHBoxLayout *queueLayout = new QHBoxLayout(queueGroup);
   queueLayout->setContentsMargins(4, 2, 4, 2);
@@ -331,9 +352,60 @@ void PortfolioWidget::setupUI() {
   queueLayout->addWidget(queueStatusLabel, 1);
   queueLayout->addWidget(queuePauseButton);
 
-  queueGroup->hide(); // only visible while a price check batch is in flight
+  queueGroup->hide();
   mainLayout->addWidget(queueGroup);
 
+  // Wire up Steam companion
+  steamCompanion = new SteamCompanion(this);
+
+  connect(steamCompanion, &SteamCompanion::qrCodeReady, this,
+          [this](const QString &url) {
+            QRLoginDialog *dlg = new QRLoginDialog(this);
+            dlg->setQRUrl(url);
+            connect(steamCompanion, &SteamCompanion::qrScanned, dlg, [dlg]() {
+              dlg->setStatus("QR scanned! Approve in Steam app...");
+            });
+            connect(steamCompanion, &SteamCompanion::loggedIn, dlg,
+                    [dlg](const QString &) { dlg->markSuccess(); });
+            dlg->exec();
+            dlg->deleteLater();
+          });
+
+  connect(steamCompanion, &SteamCompanion::loggedIn, this,
+          [this](const QString &steamId) {
+            gcStatusLabel->setText(QString("Logged in (%1)").arg(steamId));
+            gcStatusLabel->setStyleSheet("color: green; font-size: 11px;");
+          });
+
+  connect(steamCompanion, &SteamCompanion::gcReady, this, [this]() {
+    gcImportButton->setEnabled(true);
+    gcImportButton->show();
+    gcStatusLabel->setText("Connected to CS2 GC -- ready to import.");
+  });
+
+  connect(steamCompanion, &SteamCompanion::statusMessage, this,
+          [this](const QString &msg) { gcStatusLabel->setText(msg); });
+
+  connect(steamCompanion, &SteamCompanion::errorOccurred, this,
+          [this](const QString &err) {
+            gcStatusLabel->setText("Error: " + err);
+            gcStatusLabel->setStyleSheet("color: red; font-size: 11px;");
+            gcLoginButton->setEnabled(true);
+          });
+
+  connect(steamCompanion, &SteamCompanion::inventoryReceived, this,
+          &PortfolioWidget::onGCInventoryReceived);
+  connect(steamCompanion, &SteamCompanion::storageUnitReceived, this,
+          &PortfolioWidget::onGCStorageUnitReceived);
+
+  connect(gcLoginButton, &QPushButton::clicked, this,
+          &PortfolioWidget::onGCLoginClicked);
+  connect(gcImportButton, &QPushButton::clicked, this,
+          &PortfolioWidget::onGCImportClicked);
+  connect(gcStorageUnitButton, &QPushButton::clicked, this,
+          &PortfolioWidget::onGCStorageUnitClicked);
+
+  // Pause/resume queue
   connect(queuePauseButton, &QPushButton::clicked, this, [this]() {
     priceCheckPaused = !priceCheckPaused;
     if (priceCheckPaused) {
@@ -369,9 +441,6 @@ void PortfolioWidget::setupUI() {
   connect(refreshButton, &QPushButton::clicked, this,
           &PortfolioWidget::onRefreshPrices);
 
-  // steamLoginButton and importSteamButton are handled via the Steam Import
-  // dialog now; no direct connects needed here for them.
-
   connect(portfolioTable, &QTableWidget::itemSelectionChanged, this, [this]() {
     bool hasSelection = portfolioTable->currentRow() >= 0;
     removeButton->setEnabled(hasSelection);
@@ -405,6 +474,8 @@ void PortfolioWidget::loadPortfolioItems() {
 }
 
 void PortfolioWidget::populateTable() {
+  if (!portfolioTable)
+    return;
   Portfolio portfolio = portfolioManager->getPortfolio(currentPortfolioId);
 
   portfolioTable->setSortingEnabled(false);
@@ -420,6 +491,7 @@ void PortfolioWidget::populateTable() {
             : 0.0;
 
     QTableWidgetItem *nameItem = new QTableWidgetItem(item.skinName);
+    nameItem->setData(Qt::UserRole, i); // store original data index for edit/remove
     QTableWidgetItem *conditionItem = new QTableWidgetItem(item.condition);
     QTableWidgetItem *floatItem =
         new QTableWidgetItem(QString::number(item.floatValue, 'f', 6));
@@ -461,6 +533,9 @@ void PortfolioWidget::populateTable() {
 }
 
 void PortfolioWidget::calculateStatistics() {
+  if (!totalInvestmentLabel || !currentValueLabel || !totalProfitLabel ||
+      !roiLabel)
+    return;
   Portfolio portfolio = portfolioManager->getPortfolio(currentPortfolioId);
 
   double totalInvestment = 0.0;
@@ -478,16 +553,19 @@ void PortfolioWidget::calculateStatistics() {
   currentValueLabel->setText(QString("$%1").arg(currentValue, 0, 'f', 2));
 
   totalProfitLabel->setText(QString("$%1").arg(profit, 0, 'f', 2));
-  totalProfitLabel->setStyleSheet(profit >= 0 ? "color: green;"
-                                              : "color: red;");
+  totalProfitLabel->setStyleSheet(QString("font-size: 14px; font-weight: bold; color: %1;")
+                                      .arg(profit >= 0 ? "#28c878" : "#dc4646"));
 
   roiLabel->setText(QString("%1%").arg(roi, 0, 'f', 2));
-  roiLabel->setStyleSheet(roi >= 0 ? "color: green;" : "color: red;");
+  roiLabel->setStyleSheet(QString("font-size: 14px; font-weight: bold; color: %1;")
+                              .arg(roi >= 0 ? "#28c878" : "#dc4646"));
 
   updateChart();
 }
 
 void PortfolioWidget::updateChart() {
+  if (!valueSeries || !costSeries)
+    return;
   Portfolio portfolio = portfolioManager->getPortfolio(currentPortfolioId);
 
   valueSeries->clear();
@@ -777,12 +855,18 @@ void PortfolioWidget::onAddItem() {
 void PortfolioWidget::onRemoveItem() {
   int row = portfolioTable->currentRow();
   if (row >= 0) {
+    // currentRow() is the visual (sorted) row — retrieve the original data index
+    QTableWidgetItem *nameCell = portfolioTable->item(row, 0);
+    if (!nameCell)
+      return;
+    int dataIndex = nameCell->data(Qt::UserRole).toInt();
+
     QMessageBox::StandardButton reply =
         QMessageBox::question(this, "Confirm Remove", "Remove this item?",
                               QMessageBox::Yes | QMessageBox::No);
 
     if (reply == QMessageBox::Yes) {
-      portfolioManager->removeItem(currentPortfolioId, row);
+      portfolioManager->removeItem(currentPortfolioId, dataIndex);
       loadPortfolioItems();
       emit portfolioUpdated();
     }
@@ -794,11 +878,17 @@ void PortfolioWidget::onEditItem() {
   if (row < 0)
     return;
 
+  // currentRow() is the visual (sorted) row — retrieve the original data index
+  QTableWidgetItem *nameCell = portfolioTable->item(row, 0);
+  if (!nameCell)
+    return;
+  int dataIndex = nameCell->data(Qt::UserRole).toInt();
+
   Portfolio portfolio = portfolioManager->getPortfolio(currentPortfolioId);
-  if (row >= portfolio.items.size())
+  if (dataIndex >= portfolio.items.size())
     return;
 
-  const PortfolioItem &currentItem = portfolio.items[row];
+  const PortfolioItem &currentItem = portfolio.items[dataIndex];
 
   QDialog dialog(this);
   dialog.setWindowTitle("Edit Item");
@@ -850,7 +940,7 @@ void PortfolioWidget::onEditItem() {
     updatedItem.buyPrice = buyPriceSpinBox.value();
     updatedItem.notes = notesEdit.text();
 
-    portfolioManager->updateItem(currentPortfolioId, row, updatedItem);
+    portfolioManager->updateItem(currentPortfolioId, dataIndex, updatedItem);
     loadPortfolioItems();
     emit portfolioUpdated();
   }
@@ -1294,12 +1384,21 @@ void PortfolioWidget::onGCStorageUnitClicked() {
 
 void PortfolioWidget::onGCInventoryReceived(
     const QList<GCItem> &items, const QList<GCContainer> &containers) {
-  gcContainers = containers;
-  gcStorageUnitCombo->clear();
-  for (const GCContainer &c : containers)
-    gcStorageUnitCombo->addItem(c.name, c.id);
-  gcStorageUnitCombo->setEnabled(!containers.isEmpty());
-  gcStorageUnitButton->setEnabled(!containers.isEmpty());
+  // Always update storage unit dropdown when containers are present
+  if (!containers.isEmpty()) {
+    gcContainers = containers;
+    gcStorageUnitCombo->clear();
+    for (const GCContainer &c : containers)
+      gcStorageUnitCombo->addItem(c.name, c.id);
+    gcStorageUnitCombo->setEnabled(true);
+    gcStorageUnitButton->setEnabled(true);
+    gcStorageUnitCombo->show();
+    gcStorageUnitButton->show();
+  }
+
+  // Only show import dialog if we actually have inventory items
+  if (items.isEmpty())
+    return;
 
   gcStatusLabel->setText(QString("Found %1 items, %2 storage unit(s).")
                              .arg(items.size())
@@ -1318,8 +1417,7 @@ void PortfolioWidget::onGCInventoryReceived(
     steamItems.append(si);
   }
 
-  if (!steamItems.isEmpty())
-    showImportDialog(steamItems);
+  showImportDialog(steamItems);
 }
 
 void PortfolioWidget::onGCStorageUnitReceived(const QString &casketId,
