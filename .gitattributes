@@ -1,0 +1,5 @@
+*.cpp linguist-language=C++
+*.h linguist-language=C++
+*.js linguist-language=JavaScript
+*.json linguist-detectable=false
+*.md linguist-documentation=true
