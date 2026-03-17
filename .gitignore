@@ -1,0 +1,7 @@
+build/
+.cache/
+steamcompanion/node_modules
+steamcompanion/refresh_token.txt
+*.user
+.idea/
+cmake-build-*/
