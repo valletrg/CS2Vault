@@ -1,0 +1,93 @@
+name: Build
+
+on:
+  push:
+    branches: [ main ]
+    tags: [ 'v*' ]
+  pull_request:
+    branches: [ main ]
+
+jobs:
+  build-linux:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Qt6
+        uses: jurplel/install-qt-action@v4
+        with:
+          version: '6.7.0'
+          modules: 'qtcharts'
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libgl1-mesa-dev libxkbcommon-dev
+
+      - name: Configure
+        run: cmake -B build -DCMAKE_BUILD_TYPE=Release
+
+      - name: Build
+        run: cmake --build build -j$(nproc)
+
+      - name: Upload Linux binary
+        uses: actions/upload-artifact@v4
+        with:
+          name: CS2Trader-linux
+          path: build/bin/CS2Trader
+
+  build-windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Qt6
+        uses: jurplel/install-qt-action@v4
+        with:
+          version: '6.7.0'
+          modules: 'qtcharts'
+
+      - name: Configure
+        run: cmake -B build -DCMAKE_BUILD_TYPE=Release
+
+      - name: Build
+        run: cmake --build build --config Release -j4
+
+      - name: Deploy Qt DLLs
+        run: |
+          cd build/Release
+          windeployqt CS2Trader.exe
+
+      - name: Upload Windows binary
+        uses: actions/upload-artifact@v4
+        with:
+          name: CS2Trader-windows
+          path: build/Release/
+
+  release:
+    needs: [ build-linux, build-windows ]
+    runs-on: ubuntu-latest
+    if: startsWith(github.ref, 'refs/tags/v')
+    steps:
+      - name: Download Linux build
+        uses: actions/download-artifact@v4
+        with:
+          name: CS2Trader-linux
+          path: artifacts/linux
+
+      - name: Download Windows build
+        uses: actions/download-artifact@v4
+        with:
+          name: CS2Trader-windows
+          path: artifacts/windows
+
+      - name: Zip Windows build
+        run: zip -r artifacts/CS2Trader-windows.zip artifacts/windows/
+
+      - name: Create Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            artifacts/linux/CS2Trader
+            artifacts/CS2Trader-windows.zip
+          generate_release_notes: true

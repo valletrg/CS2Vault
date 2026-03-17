@@ -43,11 +43,15 @@ void SteamCompanion::start() {
   gcReady_ = false;
 
   process->setWorkingDirectory(companionDir());
+
+#ifdef Q_OS_WIN
+  process->start("node.exe", QStringList() << "index.js");
+#else
   process->start("/usr/bin/node", QStringList() << "index.js");
+#endif
 
   if (!process->waitForStarted(5000)) {
-    emit errorOccurred("Failed to start Node.js companion process. "
-                       "Is node installed at /usr/bin/node?");
+    emit errorOccurred("Failed to start Node.js companion process.");
   }
 }
 
