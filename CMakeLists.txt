@@ -16,7 +16,6 @@ set(CMAKE_AUTOMOC ON)
 set(CMAKE_AUTORCC ON)
 set(CMAKE_AUTOUIC ON)
 
-# Source files
 set(SOURCES
     main.cpp
     mainwindow.cpp
@@ -26,9 +25,10 @@ set(SOURCES
     priceempireapi.cpp
     steamapi.cpp
     portfoliomanager.cpp
+    steamcompanion.cpp
+    qrlogindialog.cpp
 )
 
-# Header files
 set(HEADERS
     mainwindow.h
     calculatorwidget.h
@@ -37,6 +37,8 @@ set(HEADERS
     priceempireapi.h
     steamapi.h
     portfoliomanager.h
+    steamcompanion.h
+    qrlogindialog.h
 )
 
 # Resource files
