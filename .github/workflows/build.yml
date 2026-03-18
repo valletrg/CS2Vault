@@ -100,7 +100,7 @@ jobs:
           $binDir = "build\bin"
           if (!(Test-Path $binDir)) { $binDir = "build" }
 
-          # Copy all Qt DLLs and plugins that windeployqt placed next to the exe
+          # Copy CS2Vault.exe and all Qt DLLs/plugins
           Get-ChildItem "$binDir" -Recurse | Where-Object { !$_.PSIsContainer } |
             ForEach-Object {
               $rel = $_.FullName.Substring((Resolve-Path $binDir).Path.Length + 1)
@@ -109,21 +109,88 @@ jobs:
               Copy-Item $_.FullName $dest
             }
 
-          # Copy standalone companion exe — no Node.js install required
+          # Copy standalone companion exe
           Copy-Item steamcompanion\dist\steamcompanion.exe release-windows\steamcompanion.exe
 
-          # Copy item databases next to the companion exe
+          # Copy item databases
           Copy-Item steamcompanion\crates.json      release-windows\ -ErrorAction SilentlyContinue
           Copy-Item steamcompanion\graffiti.json     release-windows\ -ErrorAction SilentlyContinue
           Copy-Item steamcompanion\agents.json       release-windows\ -ErrorAction SilentlyContinue
           Copy-Item steamcompanion\patches.json      release-windows\ -ErrorAction SilentlyContinue
           Copy-Item steamcompanion\collectibles.json release-windows\ -ErrorAction SilentlyContinue
-          # skins.json is gitignored (too large) — users download it manually
 
-      - name: Upload Windows build
+      - name: Install NSIS
+        run: choco install nsis -y
+
+      - name: Create installer
+        shell: pwsh
+        run: |
+          @"
+          !include "MUI2.nsh"
+
+          Name "CS2Vault"
+          OutFile "CS2Vault-Setup.exe"
+          InstallDir "`$PROGRAMFILES64\CS2Vault"
+          InstallDirRegKey HKLM "Software\CS2Vault" "Install_Dir"
+          RequestExecutionLevel admin
+          BrandingText "CS2Vault"
+
+          !define MUI_ABORTWARNING
+
+          !insertmacro MUI_PAGE_WELCOME
+          !insertmacro MUI_PAGE_DIRECTORY
+          !insertmacro MUI_PAGE_INSTFILES
+          !insertmacro MUI_PAGE_FINISH
+
+          !insertmacro MUI_UNPAGE_CONFIRM
+          !insertmacro MUI_UNPAGE_INSTFILES
+
+          !insertmacro MUI_LANGUAGE "English"
+
+          Section "CS2Vault" SecMain
+            SectionIn RO
+            SetOutPath "`$INSTDIR"
+            File /r "release-windows\*.*"
+
+            ; Desktop shortcut
+            CreateShortcut "`$DESKTOP\CS2Vault.lnk" "`$INSTDIR\CS2Vault.exe"
+
+            ; Start menu shortcut
+            CreateDirectory "`$SMPROGRAMS\CS2Vault"
+            CreateShortcut "`$SMPROGRAMS\CS2Vault\CS2Vault.lnk" "`$INSTDIR\CS2Vault.exe"
+            CreateShortcut "`$SMPROGRAMS\CS2Vault\Uninstall.lnk" "`$INSTDIR\Uninstall.exe"
+
+            ; Write uninstall info to registry
+            WriteRegStr HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\CS2Vault" "DisplayName" "CS2Vault"
+            WriteRegStr HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\CS2Vault" "UninstallString" "`$INSTDIR\Uninstall.exe"
+            WriteRegStr HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\CS2Vault" "DisplayVersion" "1.0.0"
+            WriteRegStr HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\CS2Vault" "Publisher" "CS2Vault"
+
+            WriteUninstaller "`$INSTDIR\Uninstall.exe"
+          SectionEnd
+
+          Section "Uninstall"
+            Delete "`$INSTDIR\Uninstall.exe"
+            RMDir /r "`$INSTDIR"
+            Delete "`$DESKTOP\CS2Vault.lnk"
+            RMDir /r "`$SMPROGRAMS\CS2Vault"
+            DeleteRegKey HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\CS2Vault"
+            DeleteRegKey HKLM "Software\CS2Vault"
+          SectionEnd
+          "@ | Out-File -Encoding ASCII installer.nsi
+
+          makensis installer.nsi
+
+      - name: Upload Windows installer
         uses: actions/upload-artifact@v4
         with:
-          name: CS2Vault-windows
+          name: CS2Vault-windows-installer
+          path: CS2Vault-Setup.exe
+
+      - name: Upload Windows portable zip
+        uses: actions/upload-artifact@v4
+        with:
+          name: CS2Vault-windows-portable
           path: release-windows\
 
   # ── Release (only on version tags) ───────────────────────────────────────────
@@ -140,42 +207,55 @@ jobs:
           name: CS2Vault-linux
           path: artifacts/linux
 
-      - name: Download Windows build
+      - name: Download Windows installer
         uses: actions/download-artifact@v4
         with:
-          name: CS2Vault-windows
+          name: CS2Vault-windows-installer
+          path: artifacts/installer
+
+      - name: Download Windows portable
+        uses: actions/download-artifact@v4
+        with:
+          name: CS2Vault-windows-portable
           path: artifacts/windows
 
       - name: Make Linux binary executable
         run: chmod +x artifacts/linux/CS2Vault
 
-      - name: Zip Windows build
+      - name: Zip Windows portable build
         run: |
           cd artifacts
-          zip -r CS2Vault-windows.zip windows/
+          zip -r CS2Vault-windows-portable.zip windows/
 
       - name: Create Release
         uses: softprops/action-gh-release@v2
         with:
           files: |
             artifacts/linux/CS2Vault
-            artifacts/CS2Vault-windows.zip
+            artifacts/installer/CS2Vault-Setup.exe
+            artifacts/CS2Vault-windows-portable.zip
           generate_release_notes: true
           body: |
             ## CS2Vault ${{ github.ref_name }}
 
-            ### Installation
+            ### Windows
+            **Option 1 — Installer (recommended):** Download `CS2Vault-Setup.exe` and run it. Creates a desktop shortcut and Start Menu entry, includes an uninstaller.
 
-            **Linux:**
-            Download `CS2Vault`, make it executable (`chmod +x CS2Vault`), and run it.
+            **Option 2 — Portable:** Download `CS2Vault-windows-portable.zip`, extract anywhere and run `CS2Vault.exe`. No installation needed.
+
+            Both options include everything bundled — no Node.js install required.
+
+            > **Note:** After installing, download `skins.json` into the install folder for full item name resolution in storage units:
+            > ```
+            > curl -o skins.json "https://raw.githubusercontent.com/ByMykel/CSGO-API/main/public/api/en/skins_not_grouped.json"
+            > ```
+
+            ### Linux
+            Download `CS2Vault`, make it executable and run it:
+            ```
+            chmod +x CS2Vault && ./CS2Vault
+            ```
             Requires Qt6 and Node.js 18+ installed on your system.
 
-            **Windows:**
-            Download and extract `CS2Vault-windows.zip`. Run `CS2Vault.exe`.
-            No additional dependencies required — everything is bundled.
-            After first launch, download `skins.json` into the same folder as the exe:
-            `curl -o skins.json "https://raw.githubusercontent.com/ByMykel/CSGO-API/main/public/api/en/skins_not_grouped.json"`
-
             ### First launch
-            Sign in with your Steam account via QR code or browser token.
-            Your login is saved securely — you only need to sign in once.
+            Sign in with your Steam account via QR code or browser token. Your login is saved securely — you only need to sign in once.
