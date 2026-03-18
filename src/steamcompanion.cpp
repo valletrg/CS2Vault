@@ -44,24 +44,13 @@ void SteamCompanion::start() {
     process->setWorkingDirectory(companionDir());
 
 #ifdef Q_OS_WIN
-    // Check for standalone packaged companion first
-    QString standaloneExe = companionDir() + "/../steamcompanion.exe";
+    QString standaloneExe = QCoreApplication::applicationDirPath() + "/steamcompanion.exe";
     if (QFile::exists(standaloneExe)) {
-        process->setWorkingDirectory(
-            QFileInfo(standaloneExe).absolutePath());
+        process->setWorkingDirectory(QCoreApplication::applicationDirPath());
         process->start(standaloneExe, QStringList());
     } else {
-        // Fall back to node.exe for development
-        QProcess whereNode;
-        whereNode.start("where", QStringList() << "node");
-        whereNode.waitForFinished(3000);
-        QString nodePath = QString::fromLocal8Bit(
-            whereNode.readAllStandardOutput()).split("\r\n").first().trimmed();
-        if (nodePath.isEmpty()) {
-            emit errorOccurred("Node.js not found. Please install Node.js from nodejs.org");
-            return;
-        }
-        process->start(nodePath, QStringList() << "index.js");
+        emit errorOccurred("steamcompanion.exe not found at: " + standaloneExe);
+        return;
     }
 #else
     process->start("/usr/bin/node", QStringList() << "index.js");
