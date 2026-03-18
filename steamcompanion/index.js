@@ -3,26 +3,28 @@ const GlobalOffensive = require('node-cs2');
 const { LoginSession, EAuthTokenPlatformType } = require('steam-session');
 const { execSync } = require('child_process');
 const fs = require('fs');
-process.chdir(__dirname);
+const path = require('path');
+const crypto = require('crypto');
+const os = require('os');
+
+if (process.pkg) {
+    process.chdir(path.dirname(process.execPath));
+} else {
+    process.chdir(__dirname);
+}
+
 process.stderr.write(`Working directory: ${process.cwd()}\n`);
+
 const SteamCommunity = require('steamcommunity');
 const community = new SteamCommunity();
-
 const client = new SteamUser();
 const csgo = new GlobalOffensive(client);
-
-const path = require('path');
 
 const DB_DIR = process.pkg
     ? path.dirname(process.execPath)
     : __dirname;
 
-
 const REFRESH_TOKEN_FILE = path.join(DB_DIR, 'refresh_token.txt');
-
-
-const crypto = require('crypto');
-const os = require('os');
 
 // Derive a machine-specific key from hostname + username
 // Not cryptographically perfect but stops casual plaintext reading
