@@ -32,10 +32,6 @@ int main(int argc, char *argv[]) {
   QApplication::setPalette(darkPalette);
 
   // ── Login window ──────────────────────────────────────────────────────────
-  // Show the login screen first. Once the user authenticates and the CS2
-  // Game Coordinator is ready, loginComplete is emitted and we open the
-  // main window, passing ownership of the already-connected SteamCompanion.
-
   LoginWindow *loginWindow = new LoginWindow();
 
   MainWindow *mainWindow = nullptr;
@@ -54,8 +50,6 @@ int main(int argc, char *argv[]) {
 
   loginWindow->show();
 
-  // If a saved refresh token exists, start the companion automatically
-  // so returning users skip straight past the login screen.
   loginWindow->tryAutoLogin();
 
   return app.exec();

@@ -79,7 +79,7 @@ void SettingsWidget::setupUI()
 
 void SettingsWidget::loadSettings()
 {
-    QSettings settings("CS2Trader", "Settings");
+    QSettings settings("CS2Vault", "Settings");
     
     autoUpdateCheckBox->setChecked(settings.value("autoUpdate", true).toBool());
     updateIntervalSpinBox->setValue(settings.value("updateInterval", 5).toInt());
@@ -88,7 +88,7 @@ void SettingsWidget::loadSettings()
 
 void SettingsWidget::saveSettings()
 {
-    QSettings settings("CS2Trader", "Settings");
+    QSettings settings("CS2Vault", "Settings");
     
     settings.setValue("autoUpdate", autoUpdateCheckBox->isChecked());
     settings.setValue("updateInterval", updateIntervalSpinBox->value());

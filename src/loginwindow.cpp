@@ -75,10 +75,10 @@ LoginWindow::LoginWindow(QWidget *parent)
     setupUI();
     setStyleSheet(WINDOW_STYLE);
 
-    // ── Companion signals ─────────────────────────────────────────────────────
+    // ── companion signals ─────────────────────────────────────────────────────
 
     connect(companion, &SteamCompanion::qrCodeReady, this, [this](const QString &url) {
-        // Fetch the QR image
+        // fetch qr
         QUrl apiUrl("https://api.qrserver.com/v1/create-qr-code/");
         QUrlQuery query;
         query.addQueryItem("size", "220x220");
@@ -115,7 +115,6 @@ LoginWindow::LoginWindow(QWidget *parent)
     });
 
     connect(companion, &SteamCompanion::statusMessage, this, [this](const QString &msg) {
-        // Update whichever status label is currently visible
         if (stack->currentWidget() == qrPage)
             qrStatusLabel->setText(msg);
         else if (stack->currentWidget() == tokenPage)
@@ -137,7 +136,6 @@ LoginWindow::LoginWindow(QWidget *parent)
             tokenSubmitButton->setEnabled(true);
             tokenBackButton->setEnabled(true);
         } else {
-            // Error on welcome page (e.g. auto-login failure)
             showWelcomePage();
         }
     });
@@ -373,7 +371,6 @@ void LoginWindow::setupTokenPage()
         if (!companion->isRunning())
             companion->start();
 
-        // Give the process a moment to start before sending the command
         QTimer::singleShot(500, this, [this, token]() {
             companion->sendCommand(QJsonObject{
                 {"command", "login_with_web_token"},
