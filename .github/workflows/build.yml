@@ -62,6 +62,19 @@ jobs:
         with:
           arch: x64
 
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '18'
+
+      - name: Build standalone companion exe
+        shell: pwsh
+        run: |
+          cd steamcompanion
+          npm install
+          npx pkg . --targets node18-win-x64 --output dist/steamcompanion.exe
+          cd ..
+
       - name: Configure
         run: cmake -B build -G "NMake Makefiles" -DCMAKE_BUILD_TYPE=Release
 
@@ -73,7 +86,6 @@ jobs:
         run: |
           $exePath = "build\bin\CS2Vault.exe"
           if (!(Test-Path $exePath)) {
-            # Some generators put it directly in build\
             $exePath = "build\CS2Vault.exe"
           }
           $exeDir = Split-Path $exePath
@@ -84,21 +96,29 @@ jobs:
         shell: pwsh
         run: |
           New-Item -ItemType Directory -Force -Path release-windows
+
           $binDir = "build\bin"
           if (!(Test-Path $binDir)) { $binDir = "build" }
-          Copy-Item "$binDir\CS2Vault.exe" release-windows\
+
           # Copy all Qt DLLs and plugins that windeployqt placed next to the exe
           Get-ChildItem "$binDir" -Recurse | Where-Object { !$_.PSIsContainer } |
             ForEach-Object {
-              $dest = $_.FullName.Replace((Resolve-Path $binDir).Path, (Resolve-Path release-windows).Path)
-              $destDir = Split-Path $dest
-              New-Item -ItemType Directory -Force -Path $destDir | Out-Null
+              $rel = $_.FullName.Substring((Resolve-Path $binDir).Path.Length + 1)
+              $dest = "release-windows\$rel"
+              New-Item -ItemType Directory -Force -Path (Split-Path $dest) | Out-Null
               Copy-Item $_.FullName $dest
             }
-          # Also include the steamcompanion folder
-          Copy-Item -Recurse steamcompanion release-windows\steamcompanion
-          Remove-Item -Recurse -Force release-windows\steamcompanion\node_modules -ErrorAction SilentlyContinue
-          Remove-Item -Force release-windows\steamcompanion\refresh_token.txt -ErrorAction SilentlyContinue
+
+          # Copy standalone companion exe — no Node.js install required
+          Copy-Item steamcompanion\dist\steamcompanion.exe release-windows\steamcompanion.exe
+
+          # Copy item databases next to the companion exe
+          Copy-Item steamcompanion\crates.json      release-windows\ -ErrorAction SilentlyContinue
+          Copy-Item steamcompanion\graffiti.json     release-windows\ -ErrorAction SilentlyContinue
+          Copy-Item steamcompanion\agents.json       release-windows\ -ErrorAction SilentlyContinue
+          Copy-Item steamcompanion\patches.json      release-windows\ -ErrorAction SilentlyContinue
+          Copy-Item steamcompanion\collectibles.json release-windows\ -ErrorAction SilentlyContinue
+          # skins.json is gitignored (too large) — users download it manually
 
       - name: Upload Windows build
         uses: actions/upload-artifact@v4
@@ -110,7 +130,7 @@ jobs:
   release:
     needs: [ build-linux, build-windows ]
     runs-on: ubuntu-latest
-    if: startsWith(github.ref, 'refs/tags/v')
+    if: github.ref_type == 'tag'
     permissions:
       contents: write
     steps:
@@ -152,7 +172,9 @@ jobs:
 
             **Windows:**
             Download and extract `CS2Vault-windows.zip`. Run `CS2Vault.exe`.
-            Requires Node.js 18+ installed from nodejs.org.
+            No additional dependencies required — everything is bundled.
+            After first launch, download `skins.json` into the same folder as the exe:
+            `curl -o skins.json "https://raw.githubusercontent.com/ByMykel/CSGO-API/main/public/api/en/skins_not_grouped.json"`
 
             ### First launch
             Sign in with your Steam account via QR code or browser token.

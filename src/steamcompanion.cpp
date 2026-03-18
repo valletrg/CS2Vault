@@ -37,22 +37,39 @@ SteamCompanion::SteamCompanion(QObject *parent)
 SteamCompanion::~SteamCompanion() { stop(); }
 
 void SteamCompanion::start() {
-  if (process->state() != QProcess::NotRunning)
-    return;
+    if (process->state() != QProcess::NotRunning)
+        return;
 
-  gcReady_ = false;
-
-  process->setWorkingDirectory(companionDir());
+    gcReady_ = false;
+    process->setWorkingDirectory(companionDir());
 
 #ifdef Q_OS_WIN
-  process->start("node.exe", QStringList() << "index.js");
+    // Check for standalone packaged companion first
+    QString standaloneExe = companionDir() + "/../steamcompanion.exe";
+    if (QFile::exists(standaloneExe)) {
+        process->setWorkingDirectory(
+            QFileInfo(standaloneExe).absolutePath());
+        process->start(standaloneExe, QStringList());
+    } else {
+        // Fall back to node.exe for development
+        QProcess whereNode;
+        whereNode.start("where", QStringList() << "node");
+        whereNode.waitForFinished(3000);
+        QString nodePath = QString::fromLocal8Bit(
+            whereNode.readAllStandardOutput()).split("\r\n").first().trimmed();
+        if (nodePath.isEmpty()) {
+            emit errorOccurred("Node.js not found. Please install Node.js from nodejs.org");
+            return;
+        }
+        process->start(nodePath, QStringList() << "index.js");
+    }
 #else
-  process->start("/usr/bin/node", QStringList() << "index.js");
+    process->start("/usr/bin/node", QStringList() << "index.js");
 #endif
 
-  if (!process->waitForStarted(5000)) {
-    emit errorOccurred("Failed to start Node.js companion process.");
-  }
+    if (!process->waitForStarted(5000)) {
+        emit errorOccurred("Failed to start Node.js companion process.");
+    }
 }
 
 void SteamCompanion::stop() {

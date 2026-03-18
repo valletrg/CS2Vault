@@ -3,6 +3,7 @@ const GlobalOffensive = require('node-cs2');
 const { LoginSession, EAuthTokenPlatformType } = require('steam-session');
 const { execSync } = require('child_process');
 const fs = require('fs');
+process.chdir(__dirname);
 process.stderr.write(`Working directory: ${process.cwd()}\n`);
 const SteamCommunity = require('steamcommunity');
 const community = new SteamCommunity();
@@ -10,10 +11,14 @@ const community = new SteamCommunity();
 const client = new SteamUser();
 const csgo = new GlobalOffensive(client);
 
+const path = require('path');
+
+const DB_DIR = process.pkg
+    ? path.dirname(process.execPath)
+    : __dirname;
 
 
-
-const REFRESH_TOKEN_FILE = './refresh_token.txt';
+const REFRESH_TOKEN_FILE = path.join(DB_DIR, 'refresh_token.txt');
 
 
 const crypto = require('crypto');
@@ -56,7 +61,7 @@ function sendError(message) {
 let skinsByKey = {};
 
 try {
-    const skinsRaw = JSON.parse(fs.readFileSync('./skins.json', 'utf8'));
+    const skinsRaw = JSON.parse(fs.readFileSync(path.join(DB_DIR, 'skins.json'), 'utf8'));
     skinsRaw.forEach(skin => {
         if (skin.paint_index && skin.weapon?.weapon_id) {
             const key = `${skin.weapon.weapon_id}_${skin.paint_index}`;
