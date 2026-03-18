@@ -5,7 +5,7 @@ A native Linux and Windows desktop application for managing your CS2 inventory, 
 ![Platform](https://img.shields.io/badge/platform-Linux%20%7C%20Windows-blue)
 ![Qt](https://img.shields.io/badge/Qt-6.x-green)
 ![License](https://img.shields.io/badge/license-MIT-orange)
-![Build](https://github.com/valletrg/CS2Trader-for-linux/actions/workflows/build.yml/badge.svg)
+![Build](https://github.com/valletrg/CS2Vault/actions/workflows/build.yml/badge.svg)
 
 ## Features
 
@@ -36,13 +36,13 @@ CS2Vault uses a Node.js companion process (`steamcompanion/`) to communicate wit
 ## Installing a Release
 
 **Linux:**
-1. Download `CS2Vault` from the [latest release](https://github.com/valletrg/CS2Trader-for-linux/releases/latest)
+1. Download `CS2Vault` from the [latest release](https://github.com/valletrg/CS2Vault/releases/latest)
 2. Make it executable: `chmod +x CS2Vault`
 3. Install Node.js if needed: `sudo pacman -S nodejs` or `sudo apt install nodejs`
 4. Run: `./CS2Vault`
 
 **Windows:**
-1. Download and extract `CS2Vault-windows.zip` from the [latest release](https://github.com/valletrg/CS2Trader-for-linux/releases/latest)
+1. Download and extract `CS2Vault-windows.zip` from the [latest release](https://github.com/valletrg/CS2Vault/releases/latest)
 2. Install [Node.js](https://nodejs.org) if you haven't already
 3. Open the extracted folder and run `CS2Vault.exe`
 
@@ -61,8 +61,8 @@ sudo apt install qt6-base-dev qt6-charts-dev nodejs npm cmake build-essential
 ### Build
 
 ```bash
-git clone https://github.com/valletrg/CS2Trader-for-linux.git
-cd CS2Trader-for-linux
+git clone https://github.com/valletrg/CS2Vault.git
+cd CS2Vault
 
 # Set up the Steam companion
 cd steamcompanion
