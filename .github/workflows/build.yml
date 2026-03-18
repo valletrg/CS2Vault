@@ -120,10 +120,12 @@ jobs:
           Copy-Item steamcompanion\collectibles.json release-windows\ -ErrorAction SilentlyContinue
 
       - name: Install NSIS
-        run: choco install nsis -y
+        run: choco install nsis -y --no-progress
 
       - name: Create installer
         shell: pwsh
+        env:
+          NSIS_PATH: C:\Program Files (x86)\NSIS
         run: |
           @"
           !include "MUI2.nsh"
@@ -179,7 +181,7 @@ jobs:
           SectionEnd
           "@ | Out-File -Encoding ASCII installer.nsi
 
-          makensis installer.nsi
+          & "C:\Program Files (x86)\NSIS\makensis.exe" installer.nsi
 
       - name: Upload Windows installer
         uses: actions/upload-artifact@v4
