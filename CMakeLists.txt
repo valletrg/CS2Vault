@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.16)
-project(CS2Trader LANGUAGES CXX)
+project(CS2Vault LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -17,33 +17,34 @@ set(CMAKE_AUTORCC ON)
 set(CMAKE_AUTOUIC ON)
 
 set(SOURCES
-    main.cpp
-    mainwindow.cpp
-    calculatorwidget.cpp
-    portfoliowidget.cpp
-    settingswidget.cpp
-    priceempireapi.cpp
-    steamapi.cpp
-    portfoliomanager.cpp
-    steamcompanion.cpp
-    qrlogindialog.cpp
+    src/main.cpp
+    src/mainwindow.cpp
+    src/portfoliowidget.cpp
+    src/settingswidget.cpp
+    src/priceempireapi.cpp
+    src/steamapi.cpp
+    src/portfoliomanager.cpp
+    src/steamcompanion.cpp
+    src/storageunitwidget.cpp
+    src/qrlogindialog.cpp
+    src/loginwindow.cpp
 )
 
 set(HEADERS
-    mainwindow.h
-    calculatorwidget.h
-    portfoliowidget.h
-    settingswidget.h
-    priceempireapi.h
-    steamapi.h
-    portfoliomanager.h
-    steamcompanion.h
-    qrlogindialog.h
+    src/mainwindow.h
+    src/portfoliowidget.h
+    src/settingswidget.h
+    src/priceempireapi.h
+    src/steamapi.h
+    src/portfoliomanager.h
+    src/steamcompanion.h
+    src/storageunitwidget.h
+    src/qrlogindialog.h
+    src/loginwindow.h
 )
 
-# Resource files
 set(RESOURCES
-    resources.qrc
+    src/resources.qrc
 )
 
 # Create executable
@@ -62,13 +63,13 @@ target_link_libraries(${PROJECT_NAME} PRIVATE
 
 # Include directories
 target_include_directories(${PROJECT_NAME} PRIVATE
-    ${CMAKE_CURRENT_SOURCE_DIR}
+    ${CMAKE_CURRENT_SOURCE_DIR}/src
     ${CMAKE_CURRENT_BINARY_DIR}
 )
 
 # Set executable properties
 set_target_properties(${PROJECT_NAME} PROPERTIES
-    OUTPUT_NAME "CS2Trader"
+    OUTPUT_NAME "CS2Vault"
     RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin"
 )
 

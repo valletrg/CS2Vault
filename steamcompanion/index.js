@@ -3,92 +3,41 @@ const GlobalOffensive = require('node-cs2');
 const { LoginSession, EAuthTokenPlatformType } = require('steam-session');
 const { execSync } = require('child_process');
 const fs = require('fs');
-
-const client = new SteamUser();
-const csgo = new GlobalOffensive(client);
+process.stderr.write(`Working directory: ${process.cwd()}\n`);
 const SteamCommunity = require('steamcommunity');
 const community = new SteamCommunity();
 
+const client = new SteamUser();
+const csgo = new GlobalOffensive(client);
+
+
+
+
 const REFRESH_TOKEN_FILE = './refresh_token.txt';
-let itemsDb = {};
 
-try {
-    const raw = fs.readFileSync('./items.json', 'utf8');
-    const items = JSON.parse(raw);
-    // Build a lookup map by defindex
-    items.forEach(item => {
-        if (item.item_name) {
-            itemsDb[item.defindex] = item;
-        }
-    });
-    send('status', { state: 'items_db_loaded', count: Object.keys(itemsDb).length });
-} catch (e) {
-    send('status', { state: 'items_db_missing', message: 'Run: curl -o items.json <url>' });
+
+const crypto = require('crypto');
+const os = require('os');
+
+// Derive a machine-specific key from hostname + username
+// Not cryptographically perfect but stops casual plaintext reading
+const MACHINE_KEY = crypto.createHash('sha256')
+    .update(os.hostname() + os.userInfo().username + 'cs2trader-salt')
+    .digest();
+
+function encryptToken(plaintext) {
+    const iv = crypto.randomBytes(16);
+    const cipher = crypto.createCipheriv('aes-256-cbc', MACHINE_KEY, iv);
+    const encrypted = Buffer.concat([cipher.update(plaintext, 'utf8'), cipher.final()]);
+    return iv.toString('hex') + ':' + encrypted.toString('hex');
 }
 
-
-// ── Item database ─────────────────────────────────────────────────────────────
-
-let skinsByPaintIndex = {};  // paint_index -> skin entry
-let cratesByDefIndex = {};   // def_index -> crate entry
-
-try {
-    const skinsRaw = JSON.parse(fs.readFileSync('./skins.json', 'utf8'));
-    // skins_not_grouped has one entry per skin+condition combo
-    // We only need one entry per paint_index to get the name, so just take the first match
-    skinsRaw.forEach(skin => {
-        if (skin.paint_index && !skinsByPaintIndex[skin.paint_index]) {
-            skinsByPaintIndex[skin.paint_index] = skin;
-        }
-    });
-    process.stderr.write(`Loaded ${Object.keys(skinsByPaintIndex).length} skins\n`);
-} catch (e) {
-    process.stderr.write(`Failed to load skins.json: ${e.message}\n`);
-}
-
-try {
-    const cratesRaw = JSON.parse(fs.readFileSync('./crates.json', 'utf8'));
-    cratesRaw.forEach(crate => {
-        if (crate.def_index) {
-            cratesByDefIndex[crate.def_index] = crate;
-        }
-    });
-    process.stderr.write(`Loaded ${Object.keys(cratesByDefIndex).length} crates\n`);
-} catch (e) {
-    process.stderr.write(`Failed to load crates.json: ${e.message}\n`);
-}
-
-function resolveItemName(defIndex, paintIndex, paintWear) {
-    // If it has a paint_index it's a skin
-    if (paintIndex) {
-        const skin = skinsByPaintIndex[paintIndex];
-        if (skin) {
-            // Get the weapon name from the skin entry
-            const weaponName = skin.weapon?.name || '';
-            const skinName = skin.pattern?.name || '';
-            // Determine condition from paint_wear
-            let condition = '';
-            if (paintWear !== null && paintWear !== undefined) {
-                if (paintWear < 0.07) condition = 'Factory New';
-                else if (paintWear < 0.15) condition = 'Minimal Wear';
-                else if (paintWear < 0.38) condition = 'Field-Tested';
-                else if (paintWear < 0.45) condition = 'Well-Worn';
-                else condition = 'Battle-Scarred';
-            }
-            return weaponName && skinName
-                ? `${weaponName} | ${skinName} (${condition})`
-                : skin.name || `Unknown Skin (paint:${paintIndex})`;
-        }
-        return `Unknown Skin (paint:${paintIndex})`;
-    }
-
-    // No paint_index - try to resolve as a crate/case
-    if (defIndex) {
-        const crate = cratesByDefIndex[defIndex];
-        if (crate) return crate.market_hash_name || crate.name;
-    }
-
-    return `Unknown Item (def:${defIndex})`;
+function decryptToken(ciphertext) {
+    const [ivHex, encHex] = ciphertext.split(':');
+    const iv = Buffer.from(ivHex, 'hex');
+    const encrypted = Buffer.from(encHex, 'hex');
+    const decipher = crypto.createDecipheriv('aes-256-cbc', MACHINE_KEY, iv);
+    return Buffer.concat([decipher.update(encrypted), decipher.final()]).toString('utf8');
 }
 
 
@@ -100,19 +49,131 @@ function sendError(message) {
     send('error', { message });
 }
 
+// ── Item database ─────────────────────────────────────────────────────────────
+// Key: "weapon_id_paint_index" -> skin entry (both as strings)
+// This uniquely identifies a skin on a specific weapon type.
+
+let skinsByKey = {};
+
+try {
+    const skinsRaw = JSON.parse(fs.readFileSync('./skins.json', 'utf8'));
+    skinsRaw.forEach(skin => {
+        if (skin.paint_index && skin.weapon?.weapon_id) {
+            const key = `${skin.weapon.weapon_id}_${skin.paint_index}`;
+            if (!skinsByKey[key]) {
+                skinsByKey[key] = skin;
+            }
+        }
+    });
+    process.stderr.write(`Loaded ${Object.keys(skinsByKey).length} skins\n`);
+} catch (e) {
+    process.stderr.write(`SKINS ERROR: ${e.message}\n${e.stack}\n`);
+}
+
+let defIndexDb = {};
+
+const defIndexFiles = [
+    { file: './crates.json', type: 'crate' },
+    { file: './graffiti.json', type: 'graffiti' },
+    { file: './agents.json', type: 'agent' },
+    { file: './patches.json', type: 'patch' },
+    { file: './collectibles.json', type: 'collectible' },
+];
+
+for (const { file, type } of defIndexFiles) {
+    try {
+        const raw = JSON.parse(fs.readFileSync(file, 'utf8'));
+        raw.forEach(item => {
+            if (item.def_index) {
+                const key = String(item.def_index);
+                if (!defIndexDb[key]) {
+                    defIndexDb[key] = { ...item, _type: type };
+                }
+            }
+        });
+        process.stderr.write(`Loaded ${raw.length} ${type} entries\n`);
+    } catch (e) {
+        process.stderr.write(`Skipping ${file}: ${e.message}\n`);
+    }
+}
+
+
+
+function wearFromFloat(f) {
+    if (f === null || f === undefined) return '';
+    if (f < 0.07) return 'Factory New';
+    if (f < 0.15) return 'Minimal Wear';
+    if (f < 0.38) return 'Field-Tested';
+    if (f < 0.45) return 'Well-Worn';
+    return 'Battle-Scarred';
+}
+
+function resolveItemName(defIndex, paintIndex, paintWear) {
+    // Known defindexes not in any ByMykel file
+    if (defIndex === 1209) return 'Sealed Graffiti';
+
+    if (paintIndex && defIndex) {
+        const key = `${defIndex}_${paintIndex}`;
+        const skin = skinsByKey[key];
+        if (skin) {
+            const weaponName = skin.weapon?.name || '';
+            const patternName = skin.pattern?.name || '';
+            const condition = wearFromFloat(paintWear);
+            if (weaponName && patternName && condition) {
+                return `${weaponName} | ${patternName} (${condition})`;
+            }
+            return skin.market_hash_name || `Unknown (def:${defIndex})`;
+        }
+    }
+
+    if (defIndex) {
+        const entry = defIndexDb[String(defIndex)];
+        if (entry) return entry.market_hash_name || entry.name;
+    }
+
+    return `Unknown (def:${defIndex})`;
+}
+
+function resolveMarketHashName(defIndex, paintIndex, paintWear) {
+    if (paintIndex && defIndex) {
+        const key = `${defIndex}_${paintIndex}`;
+        const skin = skinsByKey[key];
+        if (skin) {
+            // Build market hash name with the correct wear condition
+            const weaponName = skin.weapon?.name || '';
+            const patternName = skin.pattern?.name || '';
+            const condition = wearFromFloat(paintWear);
+            if (weaponName && patternName && condition) {
+                return `${weaponName} | ${patternName} (${condition})`;
+            }
+            return skin.market_hash_name || null;
+        }
+    }
+    const entry = defIndexDb[String(defIndex)];
+    if (entry) return entry.market_hash_name || entry.name;
+    return null;
+}
+
+// ── Login ─────────────────────────────────────────────────────────────────────
+
 async function startLogin() {
     send('status', { state: 'starting' });
 
     if (fs.existsSync(REFRESH_TOKEN_FILE)) {
-        const refreshToken = fs.readFileSync(REFRESH_TOKEN_FILE, 'utf8').trim();
-        send('status', { state: 'using_saved_token' });
-        client.logOn({ refreshToken });
-        return;
+        try {
+            const encrypted = fs.readFileSync(REFRESH_TOKEN_FILE, 'utf8').trim();
+            const refreshToken = decryptToken(encrypted);
+            send('status', { state: 'using_saved_token' });
+            client.logOn({ refreshToken });
+            return;
+        } catch (e) {
+            process.stderr.write('Token decrypt failed, re-authenticating\n');
+            fs.unlinkSync(REFRESH_TOKEN_FILE);
+        }
     }
 
     send('status', { state: 'creating_session' });
     const session = new LoginSession(EAuthTokenPlatformType.SteamClient);
-    send('status', { state: 'session_created' });
 
     session.on('remoteInteraction', () => {
         send('status', { state: 'qr_scanned', message: 'QR scanned! Approve in Steam app...' });
@@ -120,7 +181,7 @@ async function startLogin() {
 
     session.on('authenticated', async () => {
         const refreshToken = session.refreshToken;
-        fs.writeFileSync(REFRESH_TOKEN_FILE, refreshToken);
+        fs.writeFileSync(REFRESH_TOKEN_FILE, encryptToken(refreshToken));
         send('status', { state: 'authenticated' });
         client.logOn({ refreshToken });
     });
@@ -140,18 +201,19 @@ async function startLogin() {
     send('status', { state: 'qr_code', url: result.qrChallengeUrl });
 
     try {
-        execSync("qrencode -t UTF8 '" + result.qrChallengeUrl + "'", { stdio: 'inherit' });
+        execSync("qrencode -t UTF8 '" + result.qrChallengeUrl + "'", { stdio: ['ignore', 'ignore', 'inherit'] });
     } catch (e) {
-        send('status', { state: 'qr_fallback', url: result.qrChallengeUrl });
+        // qrencode not available
     }
 }
+
+// ── Steam events ──────────────────────────────────────────────────────────────
 
 client.on('loggedOn', () => {
     send('status', { state: 'logged_in', steamid: client.steamID.toString() });
     client.setPersona(SteamUser.EPersonaState.Online);
     client.gamesPlayed([730]);
 
-    // Give steamcommunity the session cookies so it can make authenticated requests
     client.on('webSession', (sessionId, cookies) => {
         community.setCookies(cookies);
         send('status', { state: 'web_session_ready' });
@@ -181,10 +243,11 @@ client.on('disconnected', (eresult, msg) => {
     send('status', { state: 'disconnected', reason: msg });
 });
 
+// ── CS2 Game Coordinator events ───────────────────────────────────────────────
+
 csgo.on('connectedToGC', () => {
     send('status', { state: 'gc_ready' });
 
-    // Give the GC inventory a moment to populate
     setTimeout(() => {
         const caskets = csgo.inventory.filter(item =>
             item.casket_contained_item_count !== undefined
@@ -198,12 +261,25 @@ csgo.on('connectedToGC', () => {
                 item_count: c.casket_contained_item_count
             }))
         });
+
+        if (caskets.length > 0) {
+            // Emit as inventory signal so the UI combo box gets populated
+            send('inventory', {
+                items: [],
+                containers: caskets.map(c => ({
+                    id: c.id.toString(),
+                    name: c.custom_name || 'Storage Unit'
+                }))
+            });
+        }
     }, 3000);
 });
 
 csgo.on('disconnectedFromGC', (reason) => {
     send('status', { state: 'gc_disconnected', reason });
 });
+
+// ── Inventory ─────────────────────────────────────────────────────────────────
 
 function requestInventory() {
     community.getUserInventoryContents(client.steamID, 730, 2, true, (err, items) => {
@@ -220,6 +296,18 @@ function requestInventory() {
             !item.market_hash_name?.includes('Storage Unit')
         );
 
+        // Also include GC-known caskets (storage units don't appear in web inventory)
+        const gcCaskets = csgo.inventory
+            ? csgo.inventory.filter(item => item.casket_contained_item_count !== undefined)
+            : [];
+
+        const allContainers = [
+            ...containers.map(c => ({ id: c.assetid, name: c.market_hash_name })),
+            ...gcCaskets
+                .filter(c => !containers.find(wc => wc.assetid === c.id.toString()))
+                .map(c => ({ id: c.id.toString(), name: c.custom_name || 'Storage Unit' }))
+        ];
+
         send('inventory', {
             items: regularItems.map(item => ({
                 id: item.assetid,
@@ -231,35 +319,12 @@ function requestInventory() {
                 marketable: item.marketable,
                 icon_url: item.icon_url
             })),
-            containers: containers.map(c => ({
-                id: c.assetid,
-                name: c.market_hash_name
-            }))
+            containers: allContainers
         });
     });
 }
 
-function mapItem(item) {
-    return {
-        id: item.assetid,
-        market_hash_name: item.market_hash_name,
-        name: item.name,
-        type: item.type,
-        rarity: item.tags?.find(t => t.category === 'Rarity')?.localized_tag_name || '',
-        exterior: item.tags?.find(t => t.category === 'Exterior')?.localized_tag_name || '',
-        tradable: item.tradable,
-        marketable: item.marketable,
-        icon_url: item.icon_url
-    };
-}
-
-function mapContainer(item) {
-    return {
-        id: item.assetid,
-        name: item.market_hash_name,
-        context: item.contextid
-    };
-}
+// ── Storage units ─────────────────────────────────────────────────────────────
 
 function requestStorageUnit(casketId) {
     if (!csgo.haveGCSession) {
@@ -277,12 +342,8 @@ function requestStorageUnit(casketId) {
             casket_id: casketId,
             items: (items || []).map(item => ({
                 id: item.id.toString(),
-                name: item.market_hash_name ||
-                    skinsByPaintIndex[item.paint_index]?.market_hash_name ||
-                    cratesByDefIndex[item.def_index]?.market_hash_name ||
-                    `Unknown (def:${item.def_index})`,
-                market_hash_name: skinsByPaintIndex[item.paint_index]?.market_hash_name ||
-                    cratesByDefIndex[item.def_index]?.market_hash_name || null,
+                name: resolveItemName(item.def_index, item.paint_index, item.paint_wear),
+                market_hash_name: resolveMarketHashName(item.def_index, item.paint_index, item.paint_wear),
                 def_index: item.def_index,
                 paint_index: item.paint_index || null,
                 paint_seed: item.paint_seed || null,
@@ -300,6 +361,8 @@ function requestStorageUnit(casketId) {
         });
     });
 }
+
+// ── Stdin command handler ─────────────────────────────────────────────────────
 
 let inputBuffer = '';
 
@@ -325,6 +388,7 @@ function handleCommand(msg) {
         case 'get_inventory':
             requestInventory();
             break;
+
         case 'get_storage_unit':
             if (!msg.casket_id) {
                 sendError('get_storage_unit requires casket_id');
@@ -332,10 +396,57 @@ function handleCommand(msg) {
                 requestStorageUnit(msg.casket_id);
             }
             break;
+
+        case 'add_to_storage_unit':
+            if (!msg.casket_id || !msg.item_id) {
+                sendError('add_to_storage_unit requires casket_id and item_id');
+                return;
+            }
+            if (!csgo.haveGCSession) {
+                sendError('Not connected to GC yet');
+                return;
+            }
+            csgo.addToCasket(msg.casket_id, msg.item_id);
+            csgo.once('itemCustomizationNotification', () => {
+                send('transfer_complete', {
+                    action: 'added',
+                    casket_id: msg.casket_id,
+                    item_id: msg.item_id
+                });
+            });
+            break;
+
+        case 'remove_from_storage_unit':
+            if (!msg.casket_id || !msg.item_id) {
+                sendError('remove_from_storage_unit requires casket_id and item_id');
+                return;
+            }
+            if (!csgo.haveGCSession) {
+                sendError('Not connected to GC yet');
+                return;
+            }
+            csgo.removeFromCasket(msg.casket_id, msg.item_id);
+            csgo.once('itemCustomizationNotification', () => {
+                send('transfer_complete', {
+                    action: 'removed',
+                    casket_id: msg.casket_id,
+                    item_id: msg.item_id
+                });
+            });
+            break;
+        case 'login_with_web_token':
+            if (!msg.token) {
+                sendError('login_with_web_token requires token');
+                return;
+            }
+            client.logOn({ refreshToken: msg.token });
+            break;
+
         case 'quit':
             client.logOff();
             process.exit(0);
             break;
+
         default:
             sendError('Unknown command: ' + msg.command);
     }
@@ -346,17 +457,8 @@ process.stdin.on('end', () => {
     process.exit(0);
 });
 
+//error catch
 startLogin().catch(err => {
     sendError('Failed to start login: ' + err.message);
     process.exit(1);
 });
-
-
-function resolveItemName(defIndex, paintIndex) {
-    const item = itemsDb[defIndex];
-    if (!item) return `Unknown (def:${defIndex})`;
-    if (!paintIndex) return item.item_name;
-    // Find the skin by paint_index
-    const paint = item.skins?.find(s => s.paint_index === paintIndex);
-    return paint ? `${item.item_name} | ${paint.name}` : item.item_name;
-}

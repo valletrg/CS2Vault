@@ -1,6 +1,6 @@
-# CS2Trader
+# CS2Vault
 
-A native Linux desktop application for tracking and managing your CS2 skin portfolio, with real-time Steam Market price checking and Steam inventory integration.
+A native Linux desktop application for managing your CS2 inventory, storage units, and skin portfolio.
 
 ![Platform](https://img.shields.io/badge/platform-Linux-blue)
 ![Qt](https://img.shields.io/badge/Qt-6.x-green)
@@ -9,14 +9,17 @@ A native Linux desktop application for tracking and managing your CS2 skin portf
 
 ## Features
 
-- **Portfolio Tracking** — Track your CS2 skin investments with buy price, current value, profit/loss and ROI
-- **Real-time Prices** — Fetches live prices directly from the Steam Community Market
-- **Steam Inventory Import** — Import your CS2 inventory directly via Steam QR login
-- **Storage Unit Support** — View and import items from your CS2 storage units via the Game Coordinator
-- **Trade-Up Calculator** — Calculate trade-up contract outcomes including output float range and profit
-- **Price Checker** — Look up and compare skin prices across all wear conditions
-- **Portfolio Chart** — Visualize your portfolio value over time
-- **Price Check Queue** — Background price checking with rate limit handling and pause/resume
+- **Steam Login** — Sign in via QR code or browser token. Login is saved securely so you only authenticate once.
+- **Storage Unit Management** — View and manage your CS2 storage unit contents. Move items in and out of storage units directly from the app, the same way SkinLedger does it.
+- **Inventory Browser** — Browse your full CS2 inventory alongside your storage unit contents with search and multi-select.
+- **Portfolio Tracking** — Track your CS2 skin investments with buy price, current market value, profit/loss, ROI and value history chart.
+- **Steam Market Prices** — Fetches live prices directly from the Steam Community Market with rate-limit handling and background price check queue.
+- **Trade-Up Calculator** — Calculate trade-up contract output float range and profit/loss.
+- **Price Checker** — Look up and compare skin prices across all wear conditions.
+
+## How it works
+
+CS2Vault uses a Node.js companion process (`steamcompanion/`) to communicate with Steam's servers. The companion connects to the CS2 Game Coordinator — the same approach used by tools like SkinLedger — which is what enables storage unit access. Your login token is encrypted and stored locally so you only need to sign in once per machine.
 
 ## Screenshots
 
@@ -26,12 +29,14 @@ A native Linux desktop application for tracking and managing your CS2 skin portf
 
 - Linux (x86_64)
 - Qt 6.x with Charts module
-- Node.js 18+ (for Steam inventory integration)
+- Node.js 18+
 
 ## Building from Source
 
 ### Dependencies
+
 ```bash
+# Arch Linux
 sudo pacman -S qt6-base qt6-charts nodejs npm cmake base-devel
 
 # Ubuntu/Debian
@@ -39,6 +44,7 @@ sudo apt install qt6-base-dev qt6-charts-dev nodejs npm cmake build-essential
 ```
 
 ### Build
+
 ```bash
 git clone https://github.com/valletrg/CS2Trader-for-linux.git
 cd CS2Trader-for-linux
@@ -48,40 +54,41 @@ cd steamcompanion
 npm install
 cd ..
 
-# Build the Qt app
+# Download item databases (needed for storage unit item names)
+cd steamcompanion
+curl -o skins.json "https://raw.githubusercontent.com/ByMykel/CSGO-API/main/public/api/en/skins_not_grouped.json"
+curl -o crates.json "https://raw.githubusercontent.com/ByMykel/CSGO-API/main/public/api/en/crates.json"
+curl -o graffiti.json "https://raw.githubusercontent.com/ByMykel/CSGO-API/main/public/api/en/graffiti.json"
+curl -o agents.json "https://raw.githubusercontent.com/ByMykel/CSGO-API/main/public/api/en/agents.json"
+curl -o patches.json "https://raw.githubusercontent.com/ByMykel/CSGO-API/main/public/api/en/patches.json"
+curl -o collectibles.json "https://raw.githubusercontent.com/ByMykel/CSGO-API/main/public/api/en/collectibles.json"
+cd ..
+
+# Build
 mkdir build && cd build
 cmake .. -DCMAKE_BUILD_TYPE=Release
 cmake --build . -j$(nproc)
 ```
 
 ### Run
+
 ```bash
-./build/bin/CS2Trader
+./build/bin/CS2Vault
 ```
 
-## Steam Integration
+## First Launch
 
-CS2Trader uses a Node.js companion process to communicate with Steam. On first launch, click **Sign in with Steam QR** in the Portfolio tab and scan the QR code with your Steam mobile app. Your login is saved locally — you only need to scan once.
+On first launch you will see the sign-in screen. You can either:
 
-Storage unit contents are fetched directly from the CS2 Game Coordinator, the same way tools like SkinLedger work.
+- **QR Code** — Open the Steam app on your phone, tap the menu and choose "Sign in via QR code", then scan the code shown.
+- **Browser Token** — If you are already logged into Steam in your browser, click "Sign in via Browser Token" and follow the instructions to get a one-time token.
 
-## Price Data
+Your login is saved locally in an encrypted file. Subsequent launches will connect automatically.
 
-Prices are fetched from the Steam Community Market and are subject to Steam's rate limits. When importing an inventory, prices are checked in the background at ~1 per 1.5 seconds to avoid being rate limited. You can pause and resume the price check queue at any time.
-
-## Project Structure
-```
-CS2Trader-for-linux/
-├── steamcompanion/       # Node.js Steam companion process
-│   └── index.js          # Steam login, inventory & GC communication
-├── *.cpp / *.h           # Qt application source
-├── CMakeLists.txt        # Build configuration
-└── .github/workflows/    # CI/CD for Linux and Windows builds
-```
 
 ## Contributing
 
-Pull requests are welcome. For major changes please open an issue first.
+Pull requests are welcome. For major changes please open an issue first to discuss what you would like to change.
 
 ## License
 
