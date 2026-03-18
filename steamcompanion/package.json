@@ -6,7 +6,9 @@
       "node18-win-x64"
     ],
     "assets": [
-      "*.json"
+      "*.json",
+      "node_modules/@doctormckay/steam-crypto/*.pem",
+      "node_modules/**/*.pem"
     ],
     "outputPath": "dist"
   },
