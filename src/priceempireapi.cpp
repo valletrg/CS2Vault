@@ -121,8 +121,6 @@ double PriceEmpireAPI::fetchPrice(const QString &skinName, const QString &curren
     // that before calling toDouble(). We also remove commas for prices >= $1,000.
    
     qDebug() << "HTTP status for" << skinName << ":" << httpStatus;
-    qDebug() << "Raw response for" << skinName << ":" << data;
-    qDebug() << "Raw response for" << skinName << ":" << data;
 
     if (!obj["success"].toBool()) {
         qWarning() << "Steam returned success:false for:" << skinName;

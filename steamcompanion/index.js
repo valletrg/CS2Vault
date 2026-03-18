@@ -78,11 +78,11 @@ try {
 let defIndexDb = {};
 
 const defIndexFiles = [
-    { file: './crates.json', type: 'crate' },
-    { file: './graffiti.json', type: 'graffiti' },
-    { file: './agents.json', type: 'agent' },
-    { file: './patches.json', type: 'patch' },
-    { file: './collectibles.json', type: 'collectible' },
+    { file: path.join(DB_DIR, 'crates.json'), type: 'crate' },
+    { file: path.join(DB_DIR, 'graffiti.json'), type: 'graffiti' },
+    { file: path.join(DB_DIR, 'agents.json'), type: 'agent' },
+    { file: path.join(DB_DIR, 'patches.json'), type: 'patch' },
+    { file: path.join(DB_DIR, 'collectibles.json'), type: 'collectible' },
 ];
 
 for (const { file, type } of defIndexFiles) {

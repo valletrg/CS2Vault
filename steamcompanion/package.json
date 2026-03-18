@@ -7,8 +7,10 @@
     ],
     "assets": [
       "*.json",
-      "node_modules/@doctormckay/steam-crypto/*.pem",
-      "node_modules/**/*.pem"
+      "node_modules/**/*.pem",
+      "node_modules/**/*.js",
+      "node_modules/**/*.json",
+      "node_modules/**/*.node"
     ],
     "outputPath": "dist"
   },

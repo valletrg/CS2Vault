@@ -111,7 +111,7 @@ void MainWindow::setupSystemTray()
 
 void MainWindow::loadSettings()
 {
-    QSettings settings("CS2Trader", "Settings");
+    QSettings settings("CS2Vault", "Settings");
 
     QByteArray geometry = settings.value("geometry").toByteArray();
     if (!geometry.isEmpty())
@@ -128,13 +128,13 @@ void MainWindow::loadSettings()
 
 void MainWindow::saveSettings()
 {
-    QSettings settings("CS2Trader", "Settings");
+    QSettings settings("CS2Vault", "Settings");
     settings.setValue("geometry", saveGeometry());
 }
 
 void MainWindow::updatePrices()
 {
-    QSettings settings("CS2Trader", "Settings");
+    QSettings settings("CS2Vault", "Settings");
     if (!settings.value("autoUpdate", true).toBool()) return;
 
     if (!api->isValid()) {
