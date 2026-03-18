@@ -1,4 +1,4 @@
-name: Build
+name: Build CS2Vault
 
 on:
   push:
@@ -8,8 +8,9 @@ on:
     branches: [ main ]
 
 jobs:
+  # ── Linux build ──────────────────────────────────────────────────────────────
   build-linux:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-22.04
     steps:
       - uses: actions/checkout@v4
 
@@ -18,11 +19,17 @@ jobs:
         with:
           version: '6.7.0'
           modules: 'qtcharts'
+          cache: true
 
-      - name: Install dependencies
+      - name: Install system dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y libgl1-mesa-dev libxkbcommon-dev
+          sudo apt-get install -y \
+            libgl1-mesa-dev \
+            libxkbcommon-dev \
+            libxkbcommon-x11-dev \
+            libx11-xcb-dev \
+            libxcb-cursor-dev
 
       - name: Configure
         run: cmake -B build -DCMAKE_BUILD_TYPE=Release
@@ -33,9 +40,10 @@ jobs:
       - name: Upload Linux binary
         uses: actions/upload-artifact@v4
         with:
-          name: CS2Trader-linux
-          path: build/bin/CS2Trader
+          name: CS2Vault-linux
+          path: build/bin/CS2Vault
 
+  # ── Windows build ────────────────────────────────────────────────────────────
   build-windows:
     runs-on: windows-latest
     steps:
@@ -46,48 +54,106 @@ jobs:
         with:
           version: '6.7.0'
           modules: 'qtcharts'
+          arch: 'win64_msvc2019_64'
+          cache: true
+
+      - name: Set up MSVC
+        uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: x64
 
       - name: Configure
-        run: cmake -B build -DCMAKE_BUILD_TYPE=Release
+        run: cmake -B build -G "NMake Makefiles" -DCMAKE_BUILD_TYPE=Release
 
       - name: Build
-        run: cmake --build build --config Release -j4
+        run: cmake --build build --config Release
 
       - name: Deploy Qt DLLs
+        shell: pwsh
         run: |
-          cd build/Release
-          windeployqt CS2Trader.exe
+          $exePath = "build\bin\CS2Vault.exe"
+          if (!(Test-Path $exePath)) {
+            # Some generators put it directly in build\
+            $exePath = "build\CS2Vault.exe"
+          }
+          $exeDir = Split-Path $exePath
+          windeployqt --release --no-translations --no-system-d3d-compiler $exePath
+          echo "Deployed to: $exeDir"
 
-      - name: Upload Windows binary
+      - name: Stage Windows release folder
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path release-windows
+          $binDir = "build\bin"
+          if (!(Test-Path $binDir)) { $binDir = "build" }
+          Copy-Item "$binDir\CS2Vault.exe" release-windows\
+          # Copy all Qt DLLs and plugins that windeployqt placed next to the exe
+          Get-ChildItem "$binDir" -Recurse | Where-Object { !$_.PSIsContainer } |
+            ForEach-Object {
+              $dest = $_.FullName.Replace((Resolve-Path $binDir).Path, (Resolve-Path release-windows).Path)
+              $destDir = Split-Path $dest
+              New-Item -ItemType Directory -Force -Path $destDir | Out-Null
+              Copy-Item $_.FullName $dest
+            }
+          # Also include the steamcompanion folder
+          Copy-Item -Recurse steamcompanion release-windows\steamcompanion
+          Remove-Item -Recurse -Force release-windows\steamcompanion\node_modules -ErrorAction SilentlyContinue
+          Remove-Item -Force release-windows\steamcompanion\refresh_token.txt -ErrorAction SilentlyContinue
+
+      - name: Upload Windows build
         uses: actions/upload-artifact@v4
         with:
-          name: CS2Trader-windows
-          path: build/Release/
+          name: CS2Vault-windows
+          path: release-windows\
 
+  # ── Release (only on version tags) ───────────────────────────────────────────
   release:
     needs: [ build-linux, build-windows ]
     runs-on: ubuntu-latest
     if: startsWith(github.ref, 'refs/tags/v')
+    permissions:
+      contents: write
     steps:
       - name: Download Linux build
         uses: actions/download-artifact@v4
         with:
-          name: CS2Trader-linux
+          name: CS2Vault-linux
           path: artifacts/linux
 
       - name: Download Windows build
         uses: actions/download-artifact@v4
         with:
-          name: CS2Trader-windows
+          name: CS2Vault-windows
           path: artifacts/windows
 
+      - name: Make Linux binary executable
+        run: chmod +x artifacts/linux/CS2Vault
+
       - name: Zip Windows build
-        run: zip -r artifacts/CS2Trader-windows.zip artifacts/windows/
+        run: |
+          cd artifacts
+          zip -r CS2Vault-windows.zip windows/
 
       - name: Create Release
         uses: softprops/action-gh-release@v2
         with:
           files: |
-            artifacts/linux/CS2Trader
-            artifacts/CS2Trader-windows.zip
+            artifacts/linux/CS2Vault
+            artifacts/CS2Vault-windows.zip
           generate_release_notes: true
+          body: |
+            ## CS2Vault ${{ github.ref_name }}
+
+            ### Installation
+
+            **Linux:**
+            Download `CS2Vault`, make it executable (`chmod +x CS2Vault`), and run it.
+            Requires Qt6 and Node.js 18+ installed on your system.
+
+            **Windows:**
+            Download and extract `CS2Vault-windows.zip`. Run `CS2Vault.exe`.
+            Requires Node.js 18+ installed from nodejs.org.
+
+            ### First launch
+            Sign in with your Steam account via QR code or browser token.
+            Your login is saved securely — you only need to sign in once.
