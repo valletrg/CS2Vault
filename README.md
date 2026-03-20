@@ -22,7 +22,7 @@ A native Linux and Windows desktop application for managing your CS2 inventory, 
 
 ## How Pricing Works
 
-CS2Vault does not scrape Steam or any marketplace directly. Instead, a scheduled GitHub Actions workflow fetches bulk price data from three sources every 6 hours and publishes it to a static hosting endpoint. The app downloads this file once at startup and caches it locally — no API keys, no accounts, no cost to you.
+CS2Vault does not scrape Steam or any marketplace directly. Instead, a scheduled GitHub Actions workflow fetches bulk price data from three sources every 6 hours and publishes it to a static hosting endpoint. The app downloads this file once at startup and caches it locally, no API keys, no accounts, no cost to you.
 
 **Price sources:**
 
@@ -31,7 +31,7 @@ CS2Vault does not scrape Steam or any marketplace directly. Instead, a scheduled
 | white.market | Every 6 hours |
 | market.csgo.com | Every 6 hours |
 
-You can switch between sources in the Settings tab. Prices are cached locally and only re-fetched when the cache expires, keeping the app fast for returning users. This model is what keeps CS2Vault completely free — no subscriptions, no API keys, no paywalls.
+You can switch between sources in the Settings tab. Prices are cached locally and only re-fetched when the cache expires, keeping the app fast for returning users. This model is what keeps CS2Vault completely free, no subscriptions, no API keys, no paywalls.
 
 ---
 
