@@ -28,6 +28,8 @@ set(SOURCES
     src/storageunitwidget.cpp
     src/qrlogindialog.cpp
     src/loginwindow.cpp
+    src/updatechecker.cpp
+    src/itemdatabase.cpp
 )
 
 set(HEADERS
@@ -41,6 +43,8 @@ set(HEADERS
     src/storageunitwidget.h
     src/qrlogindialog.h
     src/loginwindow.h
+    src/updatechecker.h
+    src/itemdatabase.h
 )
 
 set(RESOURCES
@@ -94,4 +98,14 @@ configure_file(
 
 add_custom_target(uninstall
     COMMAND ${CMAKE_COMMAND} -P ${CMAKE_CURRENT_BINARY_DIR}/cmake_uninstall.cmake
+)
+
+find_package(Qt6 REQUIRED COMPONENTS Widgets Network Charts Svg SvgWidgets)
+
+target_link_libraries(${PROJECT_NAME} PRIVATE
+    Qt6::Widgets
+    Qt6::Network
+    Qt6::Charts
+    Qt6::Svg
+    Qt6::SvgWidgets
 )

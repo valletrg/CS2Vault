@@ -2,11 +2,26 @@
 #include "mainwindow.h"
 
 #include <QApplication>
+#include <QFile>
+#include <QFontDatabase>
 #include <QSharedPointer>
 #include <QStyleFactory>
+#include <QTextStream>
 
 int main(int argc, char *argv[]) {
   QApplication app(argc, argv);
+  QFontDatabase::addApplicationFont(":/fonts/DMSans-Regular.ttf");
+  QFontDatabase::addApplicationFont(":/fonts/DMSans-SemiBold.ttf");
+  QFontDatabase::addApplicationFont(":/fonts/DMSans-Bold.ttf");
+  QFontDatabase::addApplicationFont(":/fonts/JetBrainsMono-Regular.ttf");
+  QFontDatabase::addApplicationFont(":/fonts/ZenDots-Regular.ttf");
+  int dmId = QFontDatabase::addApplicationFont(":/fonts/DMSans-Regular.ttf");
+  int id2 =
+      QFontDatabase::addApplicationFont(":/fonts/JetBrainsMono-Regular.ttf");
+  qDebug() << "DM Sans id:" << dmId
+           << QFontDatabase::applicationFontFamilies(dmId);
+  qDebug() << "JetBrains id:" << id2
+           << QFontDatabase::applicationFontFamilies(id2);
 
   QApplication::setApplicationName("CS2Vault");
   QApplication::setApplicationVersion("1.0.0");
@@ -15,21 +30,11 @@ int main(int argc, char *argv[]) {
   // ── Dark theme ────────────────────────────────────────────────────────────
   QApplication::setStyle(QStyleFactory::create("Fusion"));
 
-  QPalette darkPalette;
-  darkPalette.setColor(QPalette::Window, QColor(53, 53, 53));
-  darkPalette.setColor(QPalette::WindowText, Qt::white);
-  darkPalette.setColor(QPalette::Base, QColor(25, 25, 25));
-  darkPalette.setColor(QPalette::AlternateBase, QColor(53, 53, 53));
-  darkPalette.setColor(QPalette::ToolTipBase, Qt::white);
-  darkPalette.setColor(QPalette::ToolTipText, Qt::white);
-  darkPalette.setColor(QPalette::Text, Qt::white);
-  darkPalette.setColor(QPalette::Button, QColor(53, 53, 53));
-  darkPalette.setColor(QPalette::ButtonText, Qt::white);
-  darkPalette.setColor(QPalette::BrightText, Qt::red);
-  darkPalette.setColor(QPalette::Link, QColor(42, 130, 218));
-  darkPalette.setColor(QPalette::Highlight, QColor(42, 130, 218));
-  darkPalette.setColor(QPalette::HighlightedText, Qt::black);
-  QApplication::setPalette(darkPalette);
+  QFile styleFile(":/style.qss");
+  if (styleFile.open(QFile::ReadOnly | QFile::Text)) {
+    QString style = QTextStream(&styleFile).readAll();
+    app.setStyleSheet(style);
+  }
 
   // ── Login window ──────────────────────────────────────────────────────────
   LoginWindow *loginWindow = new LoginWindow();

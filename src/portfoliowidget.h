@@ -1,6 +1,7 @@
 #ifndef PORTFOLIOWIDGET_H
 #define PORTFOLIOWIDGET_H
 
+#include "portfoliomanager.h"
 #include "steamapi.h"
 #include "steamcompanion.h"
 #include <QComboBox>
@@ -34,9 +35,9 @@ class PortfolioWidget : public QWidget {
 
 public:
   explicit PortfolioWidget(PriceEmpireAPI *api, SteamAPI *steamApi,
-                        PortfolioManager *portfolioManager,
-                        SteamCompanion *steamCompanion,
-                        QWidget *parent = nullptr);
+                           PortfolioManager *portfolioManager,
+                           SteamCompanion *steamCompanion,
+                           QWidget *parent = nullptr);
   ~PortfolioWidget();
   void updateAllPrices();
 
@@ -79,59 +80,71 @@ private:
                          const QString &marketName);
   void updateQueueStatusLabel();
 
-  PriceEmpireAPI *api;
-  SteamAPI *steamApi;
-  PortfolioManager *portfolioManager;
-  QComboBox *portfolioComboBox;
-  QPushButton *createPortfolioButton;
-  QPushButton *deletePortfolioButton;
-  QPushButton *renamePortfolioButton;
-  QTableWidget *portfolioTable;
-  QPushButton *addButton;
-  QPushButton *removeButton;
-  QPushButton *editButton;
-  QPushButton *refreshButton;
-  QPushButton *exportButton;
-  QPushButton *importButton;
-  QLineEdit *steamIdEdit;
-  QPushButton *steamLoginButton;
-  QPushButton *importSteamButton;
-  QLabel *steamStatusLabel;
-  QLabel *totalInvestmentLabel;
-  QLabel *currentValueLabel;
-  QLabel *totalProfitLabel;
-  QLabel *roiLabel;
-  QTimer *autoSaveTimer;
-  QString currentPortfolioId;
-  QProgressDialog *loadingDialog;
-  QWidget *queueGroup; // price-check status bar, hidden until active
-QPushButton *gcShowImportDialogButton;
-QList<GCItem> lastFetchedItems;
+  PriceEmpireAPI *api = nullptr;
+  SteamAPI *steamApi = nullptr;
+  PortfolioManager *portfolioManager = nullptr;
 
-  // Steam companion
-  SteamCompanion *steamCompanion;
-  QPushButton *gcLoginButton;
-  QPushButton *gcImportButton;
-  QComboBox *gcStorageUnitCombo;
-  QPushButton *gcStorageUnitButton;
-  QLabel *gcStatusLabel;
+  QComboBox *portfolioComboBox = nullptr;
+  QPushButton *createPortfolioButton = nullptr;
+  QPushButton *deletePortfolioButton = nullptr;
+  QPushButton *renamePortfolioButton = nullptr;
+  QTableWidget *portfolioTable = nullptr;
+  QPushButton *addButton = nullptr;
+  QPushButton *removeButton = nullptr;
+  QPushButton *editButton = nullptr;
+  QPushButton *refreshButton = nullptr;
+  QPushButton *exportButton = nullptr;
+  QPushButton *importButton = nullptr;
+  QString marketName(const PortfolioItem &item) const;
+
+  // Hidden legacy widgets kept for slot compatibility
+  QLineEdit *steamIdEdit = nullptr;
+  QPushButton *steamLoginButton = nullptr;
+  QPushButton *importSteamButton = nullptr;
+
+  QLabel *steamStatusLabel = nullptr;
+  QLabel *totalInvestmentLabel = nullptr;
+  QLabel *currentValueLabel = nullptr;
+  QLabel *totalProfitLabel = nullptr;
+  QLabel *roiLabel = nullptr;
+
+  QTimer *autoSaveTimer = nullptr;
+  QString currentPortfolioId;
+  QProgressDialog *loadingDialog = nullptr;
+
+  // Price-check progress bar (shown during any fetch)
+  QWidget *queueGroup = nullptr;
+  QLabel *queueStatusLabel = nullptr;
+  QPushButton *queuePauseButton = nullptr;
+
+  QPushButton *gcShowImportDialogButton = nullptr;
+  QList<GCItem> lastFetchedItems;
+
+  // Steam companion / GC
+  SteamCompanion *steamCompanion = nullptr;
+  QPushButton *gcLoginButton = nullptr;
+  QPushButton *gcImportButton = nullptr;
+  QComboBox *gcStorageUnitCombo = nullptr;
+  QPushButton *gcStorageUnitButton = nullptr;
+  QLabel *gcStatusLabel = nullptr;
   QList<GCContainer> gcContainers;
 
-  QChart *portfolioChart;
-  QChartView *chartView;
-  QWidget *chartContainer;
-  QPushButton *toggleChartButton;
-  QLineSeries *valueSeries;
-  QLineSeries *costSeries;
-  QDateTimeAxis *axisX;
-  QValueAxis *axisY;
+  // Chart
+  QChart *portfolioChart = nullptr;
+  QChartView *chartView = nullptr;
+  QWidget *chartContainer = nullptr;
+  QPushButton *toggleChartButton = nullptr;
+  QLineSeries *valueSeries = nullptr;
+  QLineSeries *costSeries = nullptr;
+  QDateTimeAxis *axisX = nullptr;
+  QValueAxis *axisY = nullptr;
 
+  // Steam throttled queue (used when source == Steam)
   QQueue<PriceCheckJob> priceCheckQueue;
-  QTimer *priceCheckTimer;
+  QTimer *priceCheckTimer = nullptr;
   int priceCheckTotal = 0;
   int priceCheckDone = 0;
-  QLabel *queueStatusLabel;
-  QPushButton *queuePauseButton;
+  int priceCheckPending = 0;
   bool priceCheckPaused = false;
 };
 

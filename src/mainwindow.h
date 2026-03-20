@@ -1,18 +1,19 @@
-
 #ifndef MAINWINDOW_H
 #define MAINWINDOW_H
 
+#include "itemdatabase.h"
 #include "steamcompanion.h"
+#include "updatechecker.h"
 #include <QCloseEvent>
 #include <QMainWindow>
 #include <QMenu>
+#include <QStackedWidget>
 #include <QSystemTrayIcon>
 #include <QTimer>
-#include <memory>
+#include <QVBoxLayout>
 
-
-class QTabWidget;
-
+class QPushButton;
+class QLabel;
 class StorageUnitWidget;
 class PortfolioWidget;
 class SettingsWidget;
@@ -31,6 +32,7 @@ private slots:
   void updatePrices();
   void showNotification(const QString &title, const QString &message);
   void onAboutClicked();
+  void switchToPage(int index);
 
 private:
   void setupUI();
@@ -40,7 +42,9 @@ private:
   void saveSettings();
   void closeEvent(QCloseEvent *event) override;
 
-  QTabWidget *tabWidget = nullptr;
+  QStackedWidget *stackedWidget = nullptr;
+  QWidget *sidebar = nullptr;
+  QList<QPushButton *> navButtons;
 
   StorageUnitWidget *storageUnitWidget = nullptr;
   PortfolioWidget *portfolioWidget = nullptr;
@@ -49,11 +53,13 @@ private:
   PriceEmpireAPI *api = nullptr;
   SteamAPI *steamApi = nullptr;
   PortfolioManager *portfolioManager = nullptr;
+  ItemDatabase *itemDb = nullptr;
 
   QTimer *priceUpdateTimer = nullptr;
   QSystemTrayIcon *trayIcon = nullptr;
   QMenu *trayMenu = nullptr;
   SteamCompanion *steamCompanion = nullptr;
+  UpdateChecker *updateChecker = nullptr;
 };
 
 #endif // MAINWINDOW_H

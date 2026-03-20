@@ -1,66 +1,72 @@
 #ifndef STORAGEUNITWIDGET_H
 #define STORAGEUNITWIDGET_H
 
-#include <QWidget>
-#include <QTableWidget>
-#include <QPushButton>
-#include <QLabel>
-#include <QComboBox>
-#include <QLineEdit>
-#include <QSplitter>
-#include <QList>
+#include "priceempireapi.h"
 #include "steamcompanion.h"
+#include <QComboBox>
+#include <QLabel>
+#include <QLineEdit>
+#include <QList>
+#include <QPushButton>
+#include <QSplitter>
+#include <QTableWidget>
+#include <QWidget>
 
-class StorageUnitWidget : public QWidget
-{
-    Q_OBJECT
+class StorageUnitWidget : public QWidget {
+  Q_OBJECT
 
 public:
-    explicit StorageUnitWidget(SteamCompanion *companion, QWidget *parent = nullptr);
-    ~StorageUnitWidget();
+  explicit StorageUnitWidget(SteamCompanion *companion, PriceEmpireAPI *api,
+                             QWidget *parent = nullptr);
+  ~StorageUnitWidget();
 
 public slots:
-    void onContainersUpdated(const QList<GCContainer> &containers);
+  void onContainersUpdated(const QList<GCContainer> &containers);
 
 private slots:
-    void onStorageUnitSelected(int index);
-    void onRefreshClicked();
-    void onMoveToInventory();
-    void onMoveToStorageUnit();
-    void onTransferComplete(const QString &action, const QString &casketId, const QString &itemId);
+  void onStorageUnitSelected(int index);
+  void onRefreshClicked();
+  void onMoveToInventory();
+  void onMoveToStorageUnit();
+  void onTransferComplete(const QString &action, const QString &casketId,
+                          const QString &itemId);
 
 private:
-    void setupUI();
-    void populateStorageTable(const QList<GCItem> &items);
-    void populateInventoryTable(const QList<GCItem> &items);
-    void setStatus(const QString &text, const QString &color = "#aaa");
-    void setBusy(bool busy);
+  void setupUI();
+  void populateStorageTable(const QList<GCItem> &items);
+  void populateInventoryTable(const QList<GCItem> &items);
+  void setStatus(const QString &text, const QString &color = "#aaa");
+  void setBusy(bool busy);
 
-    SteamCompanion *companion;
+  QLabel *storageStatsLabel = nullptr;
+  PriceEmpireAPI *api = nullptr;
+  void updateStorageStats();
 
-    // Top bar
-    QComboBox   *storageCombo;
-    QPushButton *refreshButton;
-    QLabel      *statusLabel;
+  SteamCompanion *companion;
 
-    // Left — storage unit
-    QTableWidget *storageTable;
-    QPushButton  *storageSelectAllButton;
-    QPushButton  *storageSelectNoneButton;
-    QPushButton  *moveToInventoryButton;
+  // Top bar
+  QComboBox *storageCombo;
+  QPushButton *refreshButton;
+  QLabel *statusLabel;
 
-    // Right — inventory
-    QTableWidget *inventoryTable;
-    QPushButton  *inventorySelectAllButton;
-    QPushButton  *inventorySelectNoneButton;
-    QPushButton  *moveToStorageButton;
-    QLineEdit    *inventorySearchEdit;
+  // Left — storage unit
+  QTableWidget *storageTable;
+  QPushButton *storageSelectAllButton;
+  QPushButton *storageSelectNoneButton;
+  QPushButton *moveToInventoryButton;
 
-    // State
-    QList<GCContainer> containers;
-    QList<GCItem>      storageItems;
-    QList<GCItem>      inventoryItems;
-    QString            currentCasketId;
+  // Right — inventory
+  QTableWidget *inventoryTable;
+  QPushButton *inventorySelectAllButton;
+  QPushButton *inventorySelectNoneButton;
+  QPushButton *moveToStorageButton;
+  QLineEdit *inventorySearchEdit;
+
+  // State
+  QList<GCContainer> containers;
+  QList<GCItem> storageItems;
+  QList<GCItem> inventoryItems;
+  QString currentCasketId;
 };
 
 #endif // STORAGEUNITWIDGET_H

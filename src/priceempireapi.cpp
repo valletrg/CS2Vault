@@ -1,151 +1,135 @@
 #include "priceempireapi.h"
 
-#include <QNetworkRequest>
-#include <QNetworkReply>
-#include <QUrlQuery>
+#include <QDebug>
+#include <QFileInfo>
 #include <QJsonDocument>
 #include <QJsonObject>
-#include <QEventLoop>
-#include <QTimer>
-#include <QThread>
-#include <QDebug>
+#include <QNetworkReply>
+#include <QNetworkRequest>
+#include <QStandardPaths>
 
 PriceEmpireAPI::PriceEmpireAPI(QObject *parent)
-    : QObject(parent)
-    , networkManager(new QNetworkAccessManager(this))
-    , lastRequestTime(QDateTime::currentDateTime().addSecs(-10))
-{
-    // Pre-subtract 10 seconds so the very first request fires immediately
-    // without any rate-limit sleep.
-}
+    : QObject(parent), networkManager(new QNetworkAccessManager(this)) {}
 
 PriceEmpireAPI::~PriceEmpireAPI() = default;
 
-bool PriceEmpireAPI::isValid() const
-{
-    // Steam Community Market requires no API key, so we are always ready.
-    return true;
+bool PriceEmpireAPI::isValid() const { return true; }
+
+bool PriceEmpireAPI::testConnection() {
+  return m_pricesLoaded && !priceMap.isEmpty();
 }
 
-bool PriceEmpireAPI::testConnection()
-{
-    // Verify connectivity by fetching the price of a common item.
-    // If we get back a non-zero price, the Steam Market endpoint is reachable.
-    double price = fetchPrice("AK-47 | Redline (Field-Tested)");
-    return price > 0.0;
-}
+void PriceEmpireAPI::loadPrices() {
+  if (m_pricesLoaded)
+    return;
 
-void PriceEmpireAPI::rateLimit()
-{
-    QDateTime now = QDateTime::currentDateTime();
-    qint64 elapsed = lastRequestTime.msecsTo(now);
+  // Check disk cache first
+  QString cacheDir =
+      QStandardPaths::writableLocation(QStandardPaths::AppDataLocation);
+  QString cacheFile = cacheDir + "/prices-cache.json";
+  QString sourceName = QUrl(m_sourceUrl).fileName(); // e.g. "prices.json"
+  QString specificCache = cacheDir + "/cache-" + sourceName;
 
-    // Steam Market rate-limits aggressively. 1.5 seconds between requests
-    // is conservative enough to avoid 429s during bulk portfolio refreshes.
-    const qint64 minInterval = 1500;
+  QFileInfo fi(specificCache);
+  bool cacheValid = fi.exists() && fi.lastModified().secsTo(
+                                       QDateTime::currentDateTime()) < 6 * 3600;
 
-    if (elapsed < minInterval) {
-        qint64 sleepTime = minInterval - elapsed;
-        qInfo() << "Rate limiting: sleeping for" << sleepTime << "ms";
-        QThread::msleep(sleepTime);
+  if (cacheValid) {
+    qInfo() << "Using cached prices from" << specificCache;
+    QFile f(specificCache);
+    if (f.open(QIODevice::ReadOnly)) {
+      parsePrices(f.readAll());
+      f.close();
+      return;
     }
+  }
 
-    lastRequestTime = QDateTime::currentDateTime();
-}
+  qInfo() << "Fetching bulk prices from" << m_sourceUrl;
 
-double PriceEmpireAPI::fetchPrice(const QString &skinName, const QString &currency, int retryCount)
-{
-    rateLimit();
+  QNetworkRequest request{QUrl(m_sourceUrl)};
+  request.setHeader(QNetworkRequest::UserAgentHeader,
+                    "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36");
+  request.setRawHeader("Accept", "application/json");
 
-    // Steam Community Market priceoverview endpoint.
-    // appid 730 = CS2 / CS:GO. currency 1 = USD.
-    // market_hash_name must match Steam's exact item name, e.g.:
-    //   "AK-47 | Redline (Field-Tested)"
-    // Qt will percent-encode the spaces and special characters automatically
-    // when we use QUrlQuery, so we don't need to manually encode anything.
-    QUrl url("https://steamcommunity.com/market/priceoverview/");
-    QUrlQuery query;
-    query.addQueryItem("appid", "730");
-    query.addQueryItem("currency", "1");
-    query.addQueryItem("market_hash_name", skinName);
-    url.setQuery(query);
+  QNetworkReply *reply = networkManager->get(request);
 
-    QNetworkRequest request{url};
-    // Steam rejects requests without a browser-like User-Agent header.
-    request.setHeader(QNetworkRequest::UserAgentHeader,
-                      "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36");
-    request.setRawHeader("Accept", "application/json");
+  connect(
+      reply, &QNetworkReply::finished, this, [this, reply, specificCache]() {
+        reply->deleteLater();
 
-    QNetworkReply *reply = networkManager->get(request);
-
-    // Block until the reply arrives or we time out after 10 seconds.
-    // We use a local QEventLoop so the main event loop stays responsive
-    // to Qt internals, but we still get synchronous behaviour here.
-    QEventLoop loop;
-    connect(reply, &QNetworkReply::finished, &loop, &QEventLoop::quit);
-    QTimer::singleShot(10000, &loop, &QEventLoop::quit);
-    loop.exec();
-
-    int httpStatus = reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
-    QByteArray data = reply->readAll();
-    reply->deleteLater();
-
-    // 429 = Too Many Requests. Back off and retry, but cap retries at 3
-    // to avoid infinite recursion if Steam is having a bad day.
-    if (httpStatus == 429) {
-        if (retryCount >= 3) {
-            qWarning() << "Rate limited 3 times for" << skinName << "- giving up";
-            return 0.0;
+        int status =
+            reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
+        if (status != 200) {
+          emit pricesError(
+              QString("Failed to fetch prices: HTTP %1").arg(status));
+          return;
         }
-        qWarning() << "Rate limited (429). Backing off 3 seconds... (attempt" << retryCount + 1 << ")";
-        QThread::msleep(3000);
-        return fetchPrice(skinName, currency, retryCount + 1);
-    }
 
-    if (httpStatus != 200) {
-        qWarning() << "HTTP" << httpStatus << "fetching price for:" << skinName;
-        return 0.0;
-    }
+        QByteArray data = reply->readAll();
 
-    QJsonDocument doc = QJsonDocument::fromJson(data);
-    if (!doc.isObject()) {
-        qWarning() << "Unexpected response format for:" << skinName;
-        return 0.0;
-    }
+        // Save to cache
+        QFile f(specificCache);
+        if (f.open(QIODevice::WriteOnly)) {
+          f.write(data);
+          f.close();
+        }
 
-    QJsonObject obj = doc.object();
-
-    // Steam returns { "success": true, "lowest_price": "$1.23", "volume": "123",
-    //                 "median_price": "$1.10" }
-    // Prices are formatted strings with a currency symbol - we need to strip
-    // that before calling toDouble(). We also remove commas for prices >= $1,000.
-   
-    qDebug() << "HTTP status for" << skinName << ":" << httpStatus;
-
-    if (!obj["success"].toBool()) {
-        qWarning() << "Steam returned success:false for:" << skinName;
-        return 0.0;
+        parsePrices(data);
+      });
 }
 
-    // Prefer lowest_price (cheapest active listing), fall back to median_price.
-    QString priceStr = obj["lowest_price"].toString();
-    if (priceStr.isEmpty()) {
-        priceStr = obj["median_price"].toString();
-    }
+void PriceEmpireAPI::parsePrices(const QByteArray &data) {
+  QJsonDocument doc = QJsonDocument::fromJson(data);
+  if (!doc.isObject()) {
+    emit pricesError("Invalid prices JSON");
+    return;
+  }
 
-    if (priceStr.isEmpty()) {
-        qWarning() << "No active Steam Market listings for:" << skinName;
-        return 0.0;
-    }
+  QJsonObject obj = doc.object();
+  priceMap.clear();
 
-    // Strip everything that isn't a digit or a decimal point.
-    // This handles "$", "€", "£", commas, and any other locale-specific formatting.
-    priceStr.remove(QRegularExpression("[^0-9.]"));
-    double price = priceStr.toDouble();
+  if (obj.contains("_updated"))
+    m_lastUpdated = obj["_updated"].toString();
 
-    if (price <= 0.0) {
-        qWarning() << "Parsed price is zero for:" << skinName << "(raw:" << priceStr << ")";
-    }
+  for (auto it = obj.constBegin(); it != obj.constEnd(); ++it) {
+    // Skip metadata keys that start with underscore
+    if (it.key().startsWith('_'))
+      continue;
+    priceMap[it.key()] = it.value().toDouble();
+  }
 
-    return price;
+  m_pricesLoaded = true;
+  qInfo() << "Prices loaded —" << priceMap.size() << "items";
+  emit pricesLoaded();
+}
+
+double PriceEmpireAPI::fetchPrice(const QString &skinName,
+                                  const QString &currency, int retryCount) {
+  Q_UNUSED(currency)
+  Q_UNUSED(retryCount)
+
+  if (!m_pricesLoaded) {
+    qWarning() << "fetchPrice called before prices loaded for:" << skinName;
+    return 0.0;
+  }
+
+  double price = priceMap.value(skinName, 0.0);
+
+  if (price <= 0.0) {
+    qWarning() << "No price found for:" << skinName;
+  }
+
+  return price;
+}
+
+void PriceEmpireAPI::reloadPrices() {
+  m_pricesLoaded = false;
+  loadPrices();
+}
+
+void PriceEmpireAPI::setSourceUrl(const QString &url) {
+  if (m_sourceUrl == url)
+    return; // no-op if same source
+  m_sourceUrl = url;
+  reloadPrices(); // fetch new source in background immediately
 }

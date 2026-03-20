@@ -1,5 +1,14 @@
 <!DOCTYPE RCC>
 <RCC version="1.0">
     <qresource>
+        <file>style.qss</file>
+        <file>icons/storage.svg</file>
+        <file>icons/portfolio.svg</file>
+        <file>icons/settings.svg</file>
+        <file>fonts/DMSans-Regular.ttf</file>
+        <file>fonts/DMSans-SemiBold.ttf</file>
+        <file>fonts/DMSans-Bold.ttf</file>
+        <file>fonts/JetBrainsMono-Regular.ttf</file>
+        <file>fonts/ZenDots-Regular.ttf</file>
     </qresource>
 </RCC>

@@ -112,13 +112,6 @@ jobs:
           # Copy standalone companion exe
           Copy-Item steamcompanion\dist\steamcompanion.exe release-windows\steamcompanion.exe
 
-          # Copy item databases
-          Copy-Item steamcompanion\crates.json      release-windows\ -ErrorAction SilentlyContinue
-          Copy-Item steamcompanion\graffiti.json     release-windows\ -ErrorAction SilentlyContinue
-          Copy-Item steamcompanion\agents.json       release-windows\ -ErrorAction SilentlyContinue
-          Copy-Item steamcompanion\patches.json      release-windows\ -ErrorAction SilentlyContinue
-          Copy-Item steamcompanion\collectibles.json release-windows\ -ErrorAction SilentlyContinue
-
       - name: Install NSIS
         run: choco install nsis -y --no-progress
 

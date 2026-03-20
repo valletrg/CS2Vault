@@ -6,6 +6,8 @@ const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
 const os = require('os');
+const https = require('https');
+const ITEMS_CACHE_MAX_AGE_MS = 24 * 60 * 60 * 1000; // 24 hours
 
 if (process.pkg) {
     process.chdir(path.dirname(process.execPath));
@@ -27,7 +29,6 @@ const DB_DIR = process.pkg
 const REFRESH_TOKEN_FILE = path.join(DB_DIR, 'refresh_token.txt');
 
 // Derive a machine-specific key from hostname + username
-// Not cryptographically perfect but stops casual plaintext reading
 const MACHINE_KEY = crypto.createHash('sha256')
     .update(os.hostname() + os.userInfo().username + 'cs2trader-salt')
     .digest();
@@ -47,7 +48,6 @@ function decryptToken(ciphertext) {
     return Buffer.concat([decipher.update(encrypted), decipher.final()]).toString('utf8');
 }
 
-
 function send(type, data) {
     process.stdout.write(JSON.stringify({ type, ...data }) + '\n');
 }
@@ -57,54 +57,87 @@ function sendError(message) {
 }
 
 // ── Item database ─────────────────────────────────────────────────────────────
-// Key: "weapon_id_paint_index" -> skin entry (both as strings)
-// This uniquely identifies a skin on a specific weapon type.
 
 let skinsByKey = {};
+let defIndexDb = {};
+let dbReady = false;
 
-try {
-    const skinsRaw = JSON.parse(fs.readFileSync(path.join(DB_DIR, 'skins.json'), 'utf8'));
-    skinsRaw.forEach(skin => {
-        if (skin.paint_index && skin.weapon?.weapon_id) {
-            const key = `${skin.weapon.weapon_id}_${skin.paint_index}`;
-            if (!skinsByKey[key]) {
-                skinsByKey[key] = skin;
+function fetchUrl(url, redirectCount = 0) {
+    return new Promise((resolve, reject) => {
+        if (redirectCount > 5) return reject(new Error('Too many redirects'));
+
+        const request = https.get(url, {
+            headers: { 'User-Agent': 'CS2Vault/1.0.0' },
+            timeout: 15000
+        }, (res) => {
+            if (res.statusCode >= 300 && res.statusCode < 400 && res.headers.location) {
+                return fetchUrl(res.headers.location, redirectCount + 1)
+                    .then(resolve).catch(reject);
             }
-        }
+            let data = '';
+            res.on('data', chunk => data += chunk);
+            res.on('end', () => resolve({ status: res.statusCode, body: data }));
+            res.on('error', reject);
+        });
+
+        request.on('timeout', () => {
+            request.destroy();
+            reject(new Error('Request timed out'));
+        });
+
+        request.on('error', reject);
     });
-    process.stderr.write(`Loaded ${Object.keys(skinsByKey).length} skins\n`);
-} catch (e) {
-    process.stderr.write(`SKINS ERROR: ${e.message}\n${e.stack}\n`);
 }
 
-let defIndexDb = {};
+function fetchItemDatabase() {
+    process.stderr.write('Fetching item database from fursense.lol...\n');
+    const startTime = Date.now();
+    return fetchUrl('https://fursense.lol/items-extended.json')
+        .then(({ status, body }) => {
+            process.stderr.write(`Fetch took ${Date.now() - startTime}ms, size: ${(body.length / 1024 / 1024).toFixed(2)}MB\n`);
+            if (status !== 200) {
+                throw new Error(`HTTP ${status}`);
+            }
 
-const defIndexFiles = [
-    { file: path.join(DB_DIR, 'crates.json'), type: 'crate' },
-    { file: path.join(DB_DIR, 'graffiti.json'), type: 'graffiti' },
-    { file: path.join(DB_DIR, 'agents.json'), type: 'agent' },
-    { file: path.join(DB_DIR, 'patches.json'), type: 'patch' },
-    { file: path.join(DB_DIR, 'collectibles.json'), type: 'collectible' },
-];
+            const parsed = JSON.parse(body);
+            const items = parsed.items || {};
 
-for (const { file, type } of defIndexFiles) {
-    try {
-        const raw = JSON.parse(fs.readFileSync(file, 'utf8'));
-        raw.forEach(item => {
-            if (item.def_index) {
-                const key = String(item.def_index);
-                if (!defIndexDb[key]) {
-                    defIndexDb[key] = { ...item, _type: type };
+            for (const [name, entry] of Object.entries(items)) {
+                if (entry.t === 'skin') {
+                    if (entry.wi && entry.pi) {
+                        const key = `${entry.wi}_${entry.pi}`;
+                        if (!skinsByKey[key]) {
+                            const parts = name.split(' | ');
+                            const weaponName = parts[0] || '';
+                            const patternWithCondition = parts[1] || '';
+                            const patternName = patternWithCondition.replace(/\s*\(.*\)$/, '');
+                            skinsByKey[key] = {
+                                market_hash_name: name,
+                                weapon: { name: weaponName },
+                                pattern: { name: patternName }
+                            };
+                        }
+                    }
+                } else {
+                    if (entry.di) {
+                        const key = String(entry.di);
+                        if (!defIndexDb[key]) {
+                            defIndexDb[key] = {
+                                market_hash_name: name,
+                                name: name,
+                                _type: entry.t
+                            };
+                        }
+                    }
                 }
             }
+
+            dbReady = true;
+            process.stderr.write(`Item DB loaded: ${Object.keys(skinsByKey).length} skins, ${Object.keys(defIndexDb).length} other items\n`);
         });
-        process.stderr.write(`Loaded ${raw.length} ${type} entries\n`);
-    } catch (e) {
-        process.stderr.write(`Skipping ${file}: ${e.message}\n`);
-    }
 }
 
-
+// ── Item name resolution ──────────────────────────────────────────────────────
 
 function wearFromFloat(f) {
     if (f === null || f === undefined) return '';
@@ -116,7 +149,6 @@ function wearFromFloat(f) {
 }
 
 function resolveItemName(defIndex, paintIndex, paintWear) {
-    // Known defindexes not in any ByMykel file
     if (defIndex === 1209) return 'Sealed Graffiti';
 
     if (paintIndex && defIndex) {
@@ -146,7 +178,6 @@ function resolveMarketHashName(defIndex, paintIndex, paintWear) {
         const key = `${defIndex}_${paintIndex}`;
         const skin = skinsByKey[key];
         if (skin) {
-            // Build market hash name with the correct wear condition
             const weaponName = skin.weapon?.name || '';
             const patternName = skin.pattern?.name || '';
             const condition = wearFromFloat(paintWear);
@@ -234,7 +265,7 @@ client.on('loggedOn', () => {
 });
 
 client.on('refreshToken', (token) => {
-    fs.writeFileSync(REFRESH_TOKEN_FILE, token);
+    fs.writeFileSync(REFRESH_TOKEN_FILE, encryptToken(token));
 });
 
 client.on('error', (err) => {
@@ -270,7 +301,6 @@ csgo.on('connectedToGC', () => {
         });
 
         if (caskets.length > 0) {
-            // Emit as inventory signal so the UI combo box gets populated
             send('inventory', {
                 items: [],
                 containers: caskets.map(c => ({
@@ -303,7 +333,6 @@ function requestInventory() {
             !item.market_hash_name?.includes('Storage Unit')
         );
 
-        // Also include GC-known caskets (storage units don't appear in web inventory)
         const gcCaskets = csgo.inventory
             ? csgo.inventory.filter(item => item.casket_contained_item_count !== undefined)
             : [];
@@ -441,6 +470,7 @@ function handleCommand(msg) {
                 });
             });
             break;
+
         case 'login_with_web_token':
             if (!msg.token) {
                 sendError('login_with_web_token requires token');
@@ -464,8 +494,95 @@ process.stdin.on('end', () => {
     process.exit(0);
 });
 
-//error catch
-startLogin().catch(err => {
-    sendError('Failed to start login: ' + err.message);
-    process.exit(1);
-});
+// ── Startup ───────────────────────────────────────────────────────────────────
+// Fetch item database first, then start Steam login.
+// If the DB fetch fails we continue anyway — item names fall back to
+// "Unknown (def:X)" which is acceptable offline or if fursense.lol is down.
+
+fetchItemDatabase()
+    .then(() => startLogin())
+    .catch(err => {
+        process.stderr.write(`Item DB fetch failed: ${err.message} — continuing without it\n`);
+        startLogin().catch(err2 => {
+            sendError('Failed to start login: ' + err2.message);
+            process.exit(1);
+        });
+    });
+
+
+function isCacheValid(cacheFile, maxAgeMs) {
+    try {
+        const stats = fs.statSync(cacheFile);
+        return (Date.now() - stats.mtimeMs) < maxAgeMs;
+    } catch (e) {
+        return false;
+    }
+}
+
+function fetchItemDatabase() {
+    const ITEMS_CACHE_FILE = path.join(DB_DIR, 'items-extended-cache.json');
+    process.stderr.write('Loading item database...\n');
+
+    // Use cache if fresh enough
+    if (isCacheValid(ITEMS_CACHE_FILE, ITEMS_CACHE_MAX_AGE_MS)) {
+        process.stderr.write('Using cached item database.\n');
+        try {
+            const body = fs.readFileSync(ITEMS_CACHE_FILE, 'utf8');
+            parseItemDatabase(body);
+            return Promise.resolve();
+        } catch (e) {
+            process.stderr.write(`Cache read failed: ${e.message} — fetching fresh\n`);
+        }
+    }
+
+    process.stderr.write('Fetching fresh item database from fursense.lol...\n');
+    return fetchUrl('https://fursense.lol/items-extended.json')
+        .then(({ status, body }) => {
+            if (status !== 200) throw new Error(`HTTP ${status}`);
+            // Save to cache
+            try {
+                fs.writeFileSync(ITEMS_CACHE_FILE, body);
+            } catch (e) {
+                process.stderr.write(`Cache write failed: ${e.message}\n`);
+            }
+            parseItemDatabase(body);
+        });
+}
+
+function parseItemDatabase(body) {
+    const parsed = JSON.parse(body);
+    const items = parsed.items || {};
+
+    for (const [name, entry] of Object.entries(items)) {
+        if (entry.t === 'skin') {
+            if (entry.wi && entry.pi) {
+                const key = `${entry.wi}_${entry.pi}`;
+                if (!skinsByKey[key]) {
+                    const parts = name.split(' | ');
+                    const weaponName = parts[0] || '';
+                    const patternWithCondition = parts[1] || '';
+                    const patternName = patternWithCondition.replace(/\s*\(.*\)$/, '');
+                    skinsByKey[key] = {
+                        market_hash_name: name,
+                        weapon: { name: weaponName },
+                        pattern: { name: patternName }
+                    };
+                }
+            }
+        } else {
+            if (entry.di) {
+                const key = String(entry.di);
+                if (!defIndexDb[key]) {
+                    defIndexDb[key] = {
+                        market_hash_name: name,
+                        name: name,
+                        _type: entry.t
+                    };
+                }
+            }
+        }
+    }
+
+    dbReady = true;
+    process.stderr.write(`Item DB ready: ${Object.keys(skinsByKey).length} skins, ${Object.keys(defIndexDb).length} other items\n`);
+}

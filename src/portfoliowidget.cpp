@@ -1,9 +1,9 @@
 #include "portfoliowidget.h"
 #include "portfoliomanager.h"
 #include "priceempireapi.h"
+#include "qrlogindialog.h"
 #include "steamapi.h"
 
-#include "qrlogindialog.h"
 #include <QCheckBox>
 #include <QComboBox>
 #include <QDate>
@@ -29,35 +29,36 @@
 #include <QThread>
 #include <QVBoxLayout>
 
+// ---------------------------------------------------------------------------
+// Helper: numeric sort for table columns that contain formatted numbers
+// ---------------------------------------------------------------------------
 class NumericTableWidgetItem : public QTableWidgetItem {
 public:
   using QTableWidgetItem::QTableWidgetItem;
   bool operator<(const QTableWidgetItem &other) const override {
-    QVariant myData = data(Qt::UserRole);
-    QVariant otherData = other.data(Qt::UserRole);
-    if (myData.isValid() && otherData.isValid()) {
-      return myData.toDouble() < otherData.toDouble();
-    }
+    QVariant a = data(Qt::UserRole);
+    QVariant b = other.data(Qt::UserRole);
+    if (a.isValid() && b.isValid())
+      return a.toDouble() < b.toDouble();
     return QTableWidgetItem::operator<(other);
   }
 };
 
+// ---------------------------------------------------------------------------
+// Constructor
+// ---------------------------------------------------------------------------
 PortfolioWidget::PortfolioWidget(PriceEmpireAPI *api, SteamAPI *steamApi,
                                  PortfolioManager *portfolioManager,
                                  SteamCompanion *steamCompanion,
                                  QWidget *parent)
-    : QWidget(parent)
-    , api(api)
-    , steamApi(steamApi)
-    , portfolioManager(portfolioManager)
-    , autoSaveTimer(new QTimer(this))
-    , loadingDialog(nullptr)
-    , steamCompanion(steamCompanion)  // use passed-in companion
-{
-    setupUI();
+    : QWidget(parent), api(api), steamApi(steamApi),
+      portfolioManager(portfolioManager), autoSaveTimer(new QTimer(this)),
+      loadingDialog(nullptr), steamCompanion(steamCompanion) {
+  steamCompanion->blockSignals(true);
+  setupUI();
+  steamCompanion->blockSignals(false);
 
-  // These widgets are kept alive for legacy slots but are no longer shown in
-  // the UI
+  // Legacy hidden widgets kept alive for slot compatibility
   steamIdEdit = new QLineEdit(this);
   steamLoginButton = new QPushButton(this);
   importSteamButton = new QPushButton(this);
@@ -68,24 +69,23 @@ PortfolioWidget::PortfolioWidget(PriceEmpireAPI *api, SteamAPI *steamApi,
   connect(steamApi, &SteamAPI::inventoryFetched, this,
           &PortfolioWidget::onSteamInventoryFetched);
   connect(steamApi, &SteamAPI::inventoryError, this,
-        [this](const QString &error) {
+          [this](const QString &error) {
             if (loadingDialog) {
-                loadingDialog->close();
-                loadingDialog->deleteLater();
-                loadingDialog = nullptr;
+              loadingDialog->close();
+              loadingDialog->deleteLater();
+              loadingDialog = nullptr;
             }
             QMessageBox::warning(this, "Steam Error", error);
             if (steamStatusLabel) {
-                steamStatusLabel->setText("Error: " + error);
-                steamStatusLabel->setStyleSheet("color: #DC4646;");
+              steamStatusLabel->setText("Error: " + error);
+              steamStatusLabel->setStyleSheet("color: #DC4646;");
             }
-        });
+          });
 
   connect(portfolioManager, &PortfolioManager::portfolioChanged, this,
           [this](const QString &id) {
-            if (id == currentPortfolioId) {
+            if (id == currentPortfolioId && portfolioTable)
               loadPortfolioItems();
-            }
           });
 
   refreshPortfolioList();
@@ -93,10 +93,18 @@ PortfolioWidget::PortfolioWidget(PriceEmpireAPI *api, SteamAPI *steamApi,
   connect(autoSaveTimer, &QTimer::timeout, portfolioManager,
           &PortfolioManager::saveToFile);
   autoSaveTimer->start(30000);
+
+  // Steam throttled queue timer (2 s per request)
   priceCheckTimer = new QTimer(this);
-  priceCheckTimer->setInterval(2000); // one request per 2 seconds
+  priceCheckTimer->setInterval(2000);
   connect(priceCheckTimer, &QTimer::timeout, this,
           &PortfolioWidget::onPriceCheckTick);
+
+  // SteamAnalyst bulk result
+  connect(api, &PriceEmpireAPI::pricesLoaded, this, [this]() {
+    // Re-apply prices to the current portfolio whenever the bulk JSON refreshes
+    updateAllPrices();
+  });
 }
 
 PortfolioWidget::~PortfolioWidget() {
@@ -106,9 +114,10 @@ PortfolioWidget::~PortfolioWidget() {
   }
 }
 
+// ---------------------------------------------------------------------------
+// setupUI
+// ---------------------------------------------------------------------------
 void PortfolioWidget::setupUI() {
-
-
   QVBoxLayout *mainLayout = new QVBoxLayout(this);
   mainLayout->setSpacing(6);
   mainLayout->setContentsMargins(8, 8, 8, 8);
@@ -125,7 +134,8 @@ void PortfolioWidget::setupUI() {
   deletePortfolioButton = new QPushButton("Delete", this);
   renamePortfolioButton = new QPushButton("Rename", this);
 
-  for (auto *btn : {createPortfolioButton, renamePortfolioButton, deletePortfolioButton})
+  for (auto *btn :
+       {createPortfolioButton, renamePortfolioButton, deletePortfolioButton})
     btn->setFixedHeight(26);
 
   portfolioSelectLayout->addWidget(portfolioLabel);
@@ -137,9 +147,9 @@ void PortfolioWidget::setupUI() {
 
   // Stats bar
   QWidget *statsBar = new QWidget(this);
-  statsBar->setStyleSheet(
-      "QWidget { background: #1e2130; border: 1px solid #373a48; border-radius: 6px; }"
-      "QLabel  { border: none; background: transparent; }");
+  statsBar->setStyleSheet("QWidget { background: #1e2130; border: 1px solid "
+                          "#373a48; border-radius: 6px; }"
+                          "QLabel  { border: none; background: transparent; }");
   QHBoxLayout *statsLayout = new QHBoxLayout(statsBar);
   statsLayout->setContentsMargins(12, 6, 12, 6);
   statsLayout->setSpacing(24);
@@ -150,7 +160,8 @@ void PortfolioWidget::setupUI() {
     QLabel *titleLbl = new QLabel(title, statsBar);
     titleLbl->setStyleSheet("color: #888; font-size: 10px;");
     QLabel *valueLbl = new QLabel(QString::fromUtf8("\xe2\x80\x94"), statsBar);
-    valueLbl->setStyleSheet("color: #e0e0e0; font-size: 14px; font-weight: bold;");
+    valueLbl->setStyleSheet(
+        "color: #e0e0e0; font-size: 14px; font-weight: bold;");
     col->addWidget(titleLbl);
     col->addWidget(valueLbl);
     statsLayout->addLayout(col);
@@ -158,9 +169,9 @@ void PortfolioWidget::setupUI() {
   };
 
   totalInvestmentLabel = makeStatPair("INVESTED");
-  currentValueLabel    = makeStatPair("VALUE");
-  totalProfitLabel     = makeStatPair("PROFIT / LOSS");
-  roiLabel             = makeStatPair("ROI");
+  currentValueLabel = makeStatPair("VALUE");
+  totalProfitLabel = makeStatPair("PROFIT / LOSS");
+  roiLabel = makeStatPair("ROI");
   statsLayout->addStretch();
   mainLayout->addWidget(statsBar);
 
@@ -170,81 +181,67 @@ void PortfolioWidget::setupUI() {
   portfolioTable->setHorizontalHeaderLabels({"Skin Name", "Condition", "Float",
                                              "Qty", "Buy Price", "Current",
                                              "Profit/Loss", "ROI %"});
-  portfolioTable->horizontalHeader()->setSectionResizeMode(QHeaderView::Stretch);
+  portfolioTable->horizontalHeader()->setSectionResizeMode(
+      QHeaderView::Interactive);
+  portfolioTable->horizontalHeader()->setStretchLastSection(true);
+  portfolioTable->horizontalHeader()->setMinimumSectionSize(60);
   portfolioTable->setSelectionBehavior(QAbstractItemView::SelectRows);
   portfolioTable->setEditTriggers(QAbstractItemView::NoEditTriggers);
   portfolioTable->setSortingEnabled(true);
   portfolioTable->setMinimumHeight(180);
+  connect(portfolioTable, &QTableWidget::itemDoubleClicked, this,
+          [this]() { onEditItem(); });
   mainLayout->addWidget(portfolioTable, 1);
 
   // Table action buttons
   QHBoxLayout *buttonLayout = new QHBoxLayout();
   buttonLayout->setSpacing(4);
 
-  addButton     = new QPushButton("Add Item", this);
-  removeButton  = new QPushButton("Remove", this);
-  editButton    = new QPushButton("Edit", this);
-  exportButton  = new QPushButton("Export CSV", this);
-  importButton  = new QPushButton("Import CSV", this);
+  addButton = new QPushButton("Add Item", this);
+  removeButton = new QPushButton("Remove", this);
+  editButton = new QPushButton("Edit", this);
+  exportButton = new QPushButton("Export CSV", this);
+  importButton = new QPushButton("Import CSV", this);
   refreshButton = new QPushButton("Refresh Prices", this);
 
   removeButton->setEnabled(false);
   editButton->setEnabled(false);
 
-  for (auto *btn : {addButton, removeButton, editButton, exportButton, importButton, refreshButton})
-    btn->setFixedHeight(26);
-
-  buttonLayout->addWidget(addButton);
-  buttonLayout->addWidget(removeButton);
-  buttonLayout->addWidget(editButton);
-  buttonLayout->addStretch();
-  buttonLayout->addWidget(importButton);
-  buttonLayout->addWidget(exportButton);
-  buttonLayout->addWidget(refreshButton);
+  for (auto *btn : {addButton, removeButton, editButton, exportButton,
+                    importButton, refreshButton}) {
+    btn->setFixedHeight(28);
+    buttonLayout->addWidget(btn);
+  }
   mainLayout->addLayout(buttonLayout);
 
-  // Steam Import panel
-  QGroupBox *steamGroup = new QGroupBox("Steam Import", this);
-  steamGroup->setStyleSheet(
-      "QGroupBox { font-size: 11px; color: #aaa; border: 1px solid #373a48;"
-      "            border-radius: 5px; margin-top: 6px; padding-top: 4px; }"
-      "QGroupBox::title { subcontrol-origin: margin; left: 8px; top: 2px; }");
+  // Steam / GC import group
+  QGroupBox *steamGroup = new QGroupBox("Import from Steam", this);
   QVBoxLayout *steamLayout = new QVBoxLayout(steamGroup);
-  steamLayout->setContentsMargins(8, 4, 8, 6);
-  steamLayout->setSpacing(4);
 
-  gcStatusLabel = new QLabel("Not connected", steamGroup);
-  steamStatusLabel = gcStatusLabel;
-  gcStatusLabel->setStyleSheet("color: #888; font-size: 11px;");
-  steamLayout->addWidget(gcStatusLabel);
+  steamStatusLabel =
+      new QLabel("Use the buttons below to import your inventory.", steamGroup);
+  gcStatusLabel = steamStatusLabel;
+  steamStatusLabel->setStyleSheet("color: #aaa; font-size: 11px;");
+  steamLayout->addWidget(steamStatusLabel);
 
-  QHBoxLayout *steamBtnRow = new QHBoxLayout();
-  steamBtnRow->setSpacing(4);
-
-  gcLoginButton = new QPushButton("Import from Steam", steamGroup);
-  gcImportButton = new QPushButton("Import Inventory", steamGroup);
-  gcImportButton->setEnabled(steamCompanion->isGCReady());
-  gcImportButton->hide(); // hidden until logged in
-  gcShowImportDialogButton = new QPushButton("Select Items to Import", steamGroup);
+  QHBoxLayout *gcButtonLayout = new QHBoxLayout();
+  gcLoginButton = new QPushButton("Fetch Inventory", steamGroup);
+  gcShowImportDialogButton =
+      new QPushButton("Select Items to Import", steamGroup);
   gcShowImportDialogButton->setEnabled(false);
-  gcShowImportDialogButton->setFixedHeight(32);
-  steamLayout->addWidget(gcShowImportDialogButton);
 
-  for (auto *btn : {gcLoginButton, gcImportButton})
-    btn->setFixedHeight(24);
+  gcLoginButton->setFixedHeight(28);
+  gcShowImportDialogButton->setFixedHeight(28);
 
-  steamBtnRow->addWidget(gcLoginButton);
-  steamBtnRow->addWidget(gcImportButton);
-  steamBtnRow->addStretch();
-  steamLayout->addLayout(steamBtnRow);
+  gcButtonLayout->addWidget(gcLoginButton);
+  gcButtonLayout->addWidget(gcShowImportDialogButton);
+  gcButtonLayout->addStretch();
+  steamLayout->addLayout(gcButtonLayout);
 
-  // Storage unit row -- hidden until inventory received with containers
   QHBoxLayout *storageLayout = new QHBoxLayout();
-  storageLayout->setSpacing(4);
-  gcStorageUnitCombo   = new QComboBox(steamGroup);
+  gcStorageUnitCombo = new QComboBox(steamGroup);
+  gcStorageUnitButton = new QPushButton("Load Storage Unit", steamGroup);
   gcStorageUnitCombo->setEnabled(false);
-  gcStorageUnitCombo->setPlaceholderText("No storage units");
-  gcStorageUnitButton  = new QPushButton("Import Unit", steamGroup);
   gcStorageUnitButton->setEnabled(false);
   gcStorageUnitButton->setFixedHeight(24);
   gcStorageUnitCombo->hide();
@@ -255,14 +252,17 @@ void PortfolioWidget::setupUI() {
 
   mainLayout->addWidget(steamGroup);
 
-  // Chart toggle button
-  toggleChartButton = new QPushButton(QString::fromUtf8("\xe2\x96\xb6  Show Chart"), this);
+  // Chart toggle
+  toggleChartButton =
+      new QPushButton(QString::fromUtf8("\xe2\x96\xb6  Show Chart"), this);
   toggleChartButton->setCheckable(true);
   toggleChartButton->setChecked(false);
   toggleChartButton->setFixedHeight(26);
   toggleChartButton->setStyleSheet(
-      "QPushButton { text-align: left; padding-left: 8px; background: #1e2130;"
-      "              border: 1px solid #373a48; border-radius: 5px; color: #bbb; font-size: 11px; }"
+      "QPushButton { text-align: left; padding-left: 8px; background: "
+      "#1e2130;"
+      "              border: 1px solid #373a48; border-radius: 5px; color: "
+      "#bbb; font-size: 11px; }"
       "QPushButton:checked { background: #252840; color: #e0e0e0; }"
       "QPushButton:hover   { background: #252840; }");
   mainLayout->addWidget(toggleChartButton);
@@ -273,7 +273,6 @@ void PortfolioWidget::setupUI() {
   QVBoxLayout *chartContainerLayout = new QVBoxLayout(chartContainer);
   chartContainerLayout->setContentsMargins(0, 0, 0, 0);
 
-  // Chart setup
   portfolioChart = new QChart();
   portfolioChart->setTitle("Portfolio Value Over Time");
   portfolioChart->setTitleFont(QFont("Segoe UI", 11, QFont::Bold));
@@ -283,7 +282,6 @@ void PortfolioWidget::setupUI() {
   portfolioChart->legend()->setAlignment(Qt::AlignBottom);
   portfolioChart->legend()->setFont(QFont("Segoe UI", 9));
   portfolioChart->legend()->setLabelColor(QColor(200, 200, 200));
-
   portfolioChart->setBackgroundBrush(QBrush(QColor(28, 30, 38)));
   portfolioChart->setBackgroundPen(QPen(QColor(55, 58, 72), 1));
   portfolioChart->setPlotAreaBackgroundBrush(QBrush(QColor(22, 24, 30)));
@@ -344,6 +342,8 @@ void PortfolioWidget::setupUI() {
   mainLayout->addWidget(chartContainer);
 
   connect(toggleChartButton, &QPushButton::toggled, this, [this](bool checked) {
+    if (!chartContainer)
+      return;
     if (checked) {
       chartContainer->show();
       toggleChartButton->setText(QString::fromUtf8("\xe2\x96\xbc  Hide Chart"));
@@ -354,7 +354,7 @@ void PortfolioWidget::setupUI() {
     }
   });
 
-  // Price-check queue bar (hidden until active)
+  // Price-check progress bar (hidden until active)
   queueGroup = new QWidget(this);
   QHBoxLayout *queueLayout = new QHBoxLayout(queueGroup);
   queueLayout->setContentsMargins(4, 2, 4, 2);
@@ -365,12 +365,10 @@ void PortfolioWidget::setupUI() {
 
   queueLayout->addWidget(queueStatusLabel, 1);
   queueLayout->addWidget(queuePauseButton);
-
   queueGroup->hide();
   mainLayout->addWidget(queueGroup);
 
-  // Wire up Steam companion
-
+  // Steam companion signals
   connect(steamCompanion, &SteamCompanion::qrCodeReady, this,
           [this](const QString &url) {
             QRLoginDialog *dlg = new QRLoginDialog(this);
@@ -386,24 +384,35 @@ void PortfolioWidget::setupUI() {
 
   connect(steamCompanion, &SteamCompanion::loggedIn, this,
           [this](const QString &steamId) {
-            gcStatusLabel->setText(QString("Logged in (%1)").arg(steamId));
-            gcStatusLabel->setStyleSheet("color: green; font-size: 11px;");
+            if (gcStatusLabel) {
+              gcStatusLabel->setText(QString("Logged in (%1)").arg(steamId));
+              gcStatusLabel->setStyleSheet("color: green; font-size: 11px;");
+            }
           });
 
   connect(steamCompanion, &SteamCompanion::gcReady, this, [this]() {
-    gcImportButton->setEnabled(true);
-    gcImportButton->show();
-    gcStatusLabel->setText("Connected to CS2 GC -- ready to import.");
+    if (gcImportButton) {
+      gcImportButton->setEnabled(true);
+      gcImportButton->show();
+    }
+    if (gcStatusLabel)
+      gcStatusLabel->setText("Connected to CS2 GC -- ready to import.");
   });
 
   connect(steamCompanion, &SteamCompanion::statusMessage, this,
-          [this](const QString &msg) { gcStatusLabel->setText(msg); });
+          [this](const QString &msg) {
+            if (gcStatusLabel)
+              gcStatusLabel->setText(msg);
+          });
 
   connect(steamCompanion, &SteamCompanion::errorOccurred, this,
           [this](const QString &err) {
-            gcStatusLabel->setText("Error: " + err);
-            gcStatusLabel->setStyleSheet("color: red; font-size: 11px;");
-            gcLoginButton->setEnabled(true);
+            if (gcStatusLabel) {
+              gcStatusLabel->setText("Error: " + err);
+              gcStatusLabel->setStyleSheet("color: red; font-size: 11px;");
+            }
+            if (gcLoginButton)
+              gcLoginButton->setEnabled(true);
           });
 
   connect(steamCompanion, &SteamCompanion::inventoryReceived, this,
@@ -417,23 +426,26 @@ void PortfolioWidget::setupUI() {
           &PortfolioWidget::onGCImportClicked);
   connect(gcStorageUnitButton, &QPushButton::clicked, this,
           &PortfolioWidget::onGCStorageUnitClicked);
+
   connect(gcShowImportDialogButton, &QPushButton::clicked, this, [this]() {
-    if (lastFetchedItems.isEmpty()) return;
+    if (lastFetchedItems.isEmpty())
+      return;
     QVector<SteamInventoryItem> steamItems;
     for (const GCItem &gcItem : lastFetchedItems) {
-        SteamInventoryItem si;
-        si.marketHashName = gcItem.marketHashName.isEmpty() ? gcItem.name : gcItem.marketHashName;
-        si.exterior       = gcItem.exterior;
-        si.iconUrl        = gcItem.iconUrl;
-        si.tradable       = gcItem.tradable;
-        si.type           = QString::number(gcItem.defIndex);
-        si.rarity         = QString::number(gcItem.rarity);
-        steamItems.append(si);
+      SteamInventoryItem si;
+      si.marketHashName =
+          gcItem.marketHashName.isEmpty() ? gcItem.name : gcItem.marketHashName;
+      si.exterior = gcItem.exterior;
+      si.iconUrl = gcItem.iconUrl;
+      si.tradable = gcItem.tradable;
+      si.type = QString::number(gcItem.defIndex);
+      si.rarity = QString::number(gcItem.rarity);
+      steamItems.append(si);
     }
     showImportDialog(steamItems);
-});
+  });
 
-  // Pause/resume queue
+  // Pause/resume Steam queue
   connect(queuePauseButton, &QPushButton::clicked, this, [this]() {
     priceCheckPaused = !priceCheckPaused;
     if (priceCheckPaused) {
@@ -456,7 +468,6 @@ void PortfolioWidget::setupUI() {
           &PortfolioWidget::onDeletePortfolio);
   connect(renamePortfolioButton, &QPushButton::clicked, this,
           &PortfolioWidget::onRenamePortfolio);
-
   connect(addButton, &QPushButton::clicked, this, &PortfolioWidget::onAddItem);
   connect(removeButton, &QPushButton::clicked, this,
           &PortfolioWidget::onRemoveItem);
@@ -470,34 +481,39 @@ void PortfolioWidget::setupUI() {
           &PortfolioWidget::onRefreshPrices);
 
   connect(portfolioTable, &QTableWidget::itemSelectionChanged, this, [this]() {
-    bool hasSelection = portfolioTable->currentRow() >= 0;
-    removeButton->setEnabled(hasSelection);
-    editButton->setEnabled(hasSelection);
+    if (removeButton && editButton) {
+      bool sel = portfolioTable->currentRow() >= 0;
+      removeButton->setEnabled(sel);
+      editButton->setEnabled(sel);
+    }
   });
-    if (steamCompanion && steamCompanion->isGCReady()) {
-      if (gcStatusLabel) gcStatusLabel->setText("Connected to CS2 GC — ready to import.");
-      if (gcLoginButton) gcLoginButton->setText("Import from Steam");
-      if (gcImportButton) gcImportButton->setEnabled(true);
+
+  if (steamCompanion && steamCompanion->isGCReady()) {
+    if (gcStatusLabel)
+      gcStatusLabel->setText("Connected to CS2 GC — ready to import.");
+    if (gcLoginButton)
+      gcLoginButton->setText("Import from Steam");
+    if (gcImportButton)
+      gcImportButton->setEnabled(true);
   }
 }
 
+// ---------------------------------------------------------------------------
+// Portfolio management
+// ---------------------------------------------------------------------------
+
 void PortfolioWidget::refreshPortfolioList() {
   portfolioComboBox->clear();
-
   QVector<Portfolio> portfolios = portfolioManager->getAllPortfolios();
-  for (const Portfolio &portfolio : portfolios) {
-    portfolioComboBox->addItem(portfolio.name, portfolio.id);
-  }
+  for (const Portfolio &p : portfolios)
+    portfolioComboBox->addItem(p.name, p.id);
 
   if (!portfolios.isEmpty()) {
     currentPortfolioId = portfolios.first().id;
     loadPortfolioItems();
-    // Seed the first history dot if the portfolio already has items but no
-    // history yet
     Portfolio p = portfolioManager->getPortfolio(currentPortfolioId);
-    if (!p.items.isEmpty() && p.history.isEmpty()) {
+    if (!p.items.isEmpty() && p.history.isEmpty())
       portfolioManager->recordHistoryPoint(currentPortfolioId);
-    }
   }
 }
 
@@ -524,30 +540,30 @@ void PortfolioWidget::populateTable() {
             : 0.0;
 
     QTableWidgetItem *nameItem = new QTableWidgetItem(item.skinName);
-    nameItem->setData(Qt::UserRole, i); // store original data index for edit/remove
+    nameItem->setData(Qt::UserRole, i);
+
     QTableWidgetItem *conditionItem = new QTableWidgetItem(item.condition);
     QTableWidgetItem *floatItem =
         new QTableWidgetItem(QString::number(item.floatValue, 'f', 6));
 
-    NumericTableWidgetItem *qtyItem =
-        new NumericTableWidgetItem(QString::number(item.quantity));
+    auto *qtyItem = new NumericTableWidgetItem(QString::number(item.quantity));
     qtyItem->setData(Qt::UserRole, item.quantity);
 
-    NumericTableWidgetItem *buyItem = new NumericTableWidgetItem(
+    auto *buyItem = new NumericTableWidgetItem(
         QString("$%1").arg(item.buyPrice, 0, 'f', 2));
     buyItem->setData(Qt::UserRole, item.buyPrice);
 
-    NumericTableWidgetItem *currentItem = new NumericTableWidgetItem(
+    auto *currentItem = new NumericTableWidgetItem(
         QString("$%1").arg(item.currentPrice, 0, 'f', 2));
     currentItem->setData(Qt::UserRole, item.currentPrice);
 
-    NumericTableWidgetItem *profitItem =
+    auto *profitItem =
         new NumericTableWidgetItem(QString("$%1").arg(profit, 0, 'f', 2));
     profitItem->setData(Qt::UserRole, profit);
     profitItem->setForeground(profit >= 0 ? QColor(0, 150, 0)
                                           : QColor(200, 0, 0));
 
-    NumericTableWidgetItem *roiItem =
+    auto *roiItem =
         new NumericTableWidgetItem(QString("%1%").arg(roi, 0, 'f', 2));
     roiItem->setData(Qt::UserRole, roi);
     roiItem->setForeground(roi >= 0 ? QColor(0, 150, 0) : QColor(200, 0, 0));
@@ -569,10 +585,9 @@ void PortfolioWidget::calculateStatistics() {
   if (!totalInvestmentLabel || !currentValueLabel || !totalProfitLabel ||
       !roiLabel)
     return;
-  Portfolio portfolio = portfolioManager->getPortfolio(currentPortfolioId);
 
-  double totalInvestment = 0.0;
-  double currentValue = 0.0;
+  Portfolio portfolio = portfolioManager->getPortfolio(currentPortfolioId);
+  double totalInvestment = 0.0, currentValue = 0.0;
 
   for (const PortfolioItem &item : portfolio.items) {
     totalInvestment += item.buyPrice * item.quantity;
@@ -586,118 +601,153 @@ void PortfolioWidget::calculateStatistics() {
   currentValueLabel->setText(QString("$%1").arg(currentValue, 0, 'f', 2));
 
   totalProfitLabel->setText(QString("$%1").arg(profit, 0, 'f', 2));
-  totalProfitLabel->setStyleSheet(QString("font-size: 14px; font-weight: bold; color: %1;")
-                                      .arg(profit >= 0 ? "#28c878" : "#dc4646"));
+  totalProfitLabel->setStyleSheet(
+      QString("font-size: 14px; font-weight: bold; color: %1;")
+          .arg(profit >= 0 ? "#28c878" : "#dc4646"));
 
   roiLabel->setText(QString("%1%").arg(roi, 0, 'f', 2));
-  roiLabel->setStyleSheet(QString("font-size: 14px; font-weight: bold; color: %1;")
-                              .arg(roi >= 0 ? "#28c878" : "#dc4646"));
-
-  updateChart();
+  roiLabel->setStyleSheet(
+      QString("font-size: 14px; font-weight: bold; color: %1;")
+          .arg(roi >= 0 ? "#28c878" : "#dc4646"));
 }
 
 void PortfolioWidget::updateChart() {
-  if (!valueSeries || !costSeries)
-    return;
-  Portfolio portfolio = portfolioManager->getPortfolio(currentPortfolioId);
-
   valueSeries->clear();
   costSeries->clear();
 
-  if (portfolio.history.isEmpty() && portfolio.items.isEmpty()) {
+  Portfolio portfolio = portfolioManager->getPortfolio(currentPortfolioId);
+  if (portfolio.history.isEmpty())
     return;
-  }
 
-  double minVal = 1e12;
-  double maxVal = 0;
-  qint64 minTime = 253402300799000LL;
-  qint64 maxTime = 0;
+  double minV = std::numeric_limits<double>::max();
+  double maxV = std::numeric_limits<double>::lowest();
 
   for (const PortfolioHistoryPoint &pt : portfolio.history) {
-    valueSeries->append(pt.timestamp * 1000, pt.totalValue);
-    costSeries->append(pt.timestamp * 1000, pt.totalCost);
-
-    if (pt.totalValue > maxVal)
-      maxVal = pt.totalValue;
-    if (pt.totalCost > maxVal)
-      maxVal = pt.totalCost;
-    if (pt.totalValue < minVal)
-      minVal = pt.totalValue;
-    if (pt.totalCost < minVal)
-      minVal = pt.totalCost;
-    if (pt.timestamp * 1000 > maxTime)
-      maxTime = pt.timestamp * 1000;
-    if (pt.timestamp * 1000 < minTime)
-      minTime = pt.timestamp * 1000;
+    valueSeries->append(pt.timestamp, pt.totalValue);
+    costSeries->append(pt.timestamp, pt.totalCost);
+    minV = std::min(minV, std::min(pt.totalValue, pt.totalCost));
+    maxV = std::max(maxV, std::max(pt.totalValue, pt.totalCost));
   }
 
-  // Always plot the current live state as the rightmost point
-  double currentCost = 0;
-  double currentValue = 0;
-  for (const PortfolioItem &item : portfolio.items) {
-    currentCost += item.buyPrice * item.quantity;
-    currentValue += item.currentPrice * item.quantity;
+  if (!portfolio.history.isEmpty()) {
+    axisX->setRange(
+        QDateTime::fromMSecsSinceEpoch(portfolio.history.first().timestamp),
+        QDateTime::fromMSecsSinceEpoch(portfolio.history.last().timestamp));
   }
 
-  qint64 nowMs = QDateTime::currentSecsSinceEpoch() * 1000;
-  valueSeries->append(nowMs, currentValue);
-  costSeries->append(nowMs, currentCost);
+  double padding = (maxV - minV) * 0.1;
+  axisY->setRange(std::max(0.0, minV - padding), maxV + padding);
 
-  if (currentValue > maxVal)
-    maxVal = currentValue;
-  if (currentCost > maxVal)
-    maxVal = currentCost;
-  if (currentValue < minVal)
-    minVal = currentValue;
-  if (currentCost < minVal)
-    minVal = currentCost;
-  if (nowMs > maxTime)
-    maxTime = nowMs;
-  if (nowMs < minTime)
-    minTime = nowMs;
-
-  if (minVal == 1e12)
-    minVal = 0;
-
-  double padding = (maxVal - minVal) * 0.12;
-  if (padding < 5.0)
-    padding = 5.0;
-
-  axisY->setRange(qMax(0.0, minVal - padding), maxVal + padding);
-  axisY->applyNiceNumbers();
-
-  QDateTime minDt = QDateTime::fromMSecsSinceEpoch(minTime);
-  QDateTime maxDt = QDateTime::fromMSecsSinceEpoch(maxTime);
-
-  if (minTime == maxTime) {
-    // Only one point — show a ±1-day window so the dot is centered
-    minDt = minDt.addDays(-1);
-    maxDt = maxDt.addDays(1);
-    axisX->setFormat("MMM d");
-  } else {
-    qint64 span = maxTime - minTime;
-    qint64 pad = qMax(span / 20, (qint64)3600000); // at least 1h
-    minDt = QDateTime::fromMSecsSinceEpoch(minTime - pad);
-    maxDt = QDateTime::fromMSecsSinceEpoch(maxTime + pad);
-
-    // Adaptive date format
-    qint64 spanDays = span / 86400000;
-    if (spanDays <= 2)
-      axisX->setFormat("MMM d hh:mm");
-    else if (spanDays <= 90)
-      axisX->setFormat("MMM d");
-    else
-      axisX->setFormat("MMM yyyy");
-  }
-
-  axisX->setRange(minDt, maxDt);
-
-  // Re-colour value line green or red based on whether we're in profit
-  bool inProfit = (currentValue >= currentCost);
-  QPen vPen(inProfit ? QColor(56, 200, 120) : QColor(220, 70, 70));
+  QPen vPen(maxV >= 0 ? QColor(56, 200, 120) : QColor(220, 70, 70));
   vPen.setWidth(2);
   valueSeries->setPen(vPen);
 }
+
+// ---------------------------------------------------------------------------
+// Price refresh — branches on the active source
+// ---------------------------------------------------------------------------
+
+void PortfolioWidget::onRefreshPrices() { updateAllPrices(); }
+
+void PortfolioWidget::updateAllPrices() {
+  if (!api->arePricesLoaded())
+    return;
+
+  Portfolio portfolio = portfolioManager->getPortfolio(currentPortfolioId);
+  if (portfolio.items.isEmpty())
+    return;
+
+  int updated = 0;
+  for (int i = 0; i < portfolio.items.size(); ++i) {
+    PortfolioItem item = portfolio.items[i];
+    double price = api->fetchPrice(marketName(item));
+    if (price > 0.0) {
+      item.currentPrice = price;
+      portfolioManager->updateItem(currentPortfolioId, i, item);
+      ++updated;
+    }
+  }
+
+  loadPortfolioItems();
+  calculateStatistics();
+  portfolioManager->recordHistoryPoint(currentPortfolioId);
+  emit portfolioUpdated();
+}
+
+// ---------------------------------------------------------------------------
+// Steam queue (throttled path)
+// ---------------------------------------------------------------------------
+
+void PortfolioWidget::enqueuePriceCheck(const QString &portfolioId,
+                                        int itemIndex,
+                                        const QString &marketName) {
+  PriceCheckJob job;
+  job.portfolioId = portfolioId;
+  job.itemIndex = itemIndex;
+  job.marketName = marketName;
+  priceCheckQueue.enqueue(job);
+
+  queueGroup->show();
+  updateQueueStatusLabel();
+  queuePauseButton->setEnabled(true);
+
+  if (!priceCheckTimer->isActive() && !priceCheckPaused)
+    priceCheckTimer->start();
+}
+
+void PortfolioWidget::onPriceCheckTick() {
+  if (priceCheckQueue.isEmpty()) {
+    priceCheckTimer->stop();
+    queuePauseButton->setEnabled(false);
+    queuePauseButton->setText("Pause");
+    priceCheckPaused = false;
+    queueStatusLabel->setText(
+        QString("Done — %1 items price checked.").arg(priceCheckDone));
+    loadPortfolioItems();
+    calculateStatistics();
+    portfolioManager->recordHistoryPoint(currentPortfolioId);
+    QTimer::singleShot(3000, this, [this]() { queueGroup->hide(); });
+    return;
+  }
+
+  PriceCheckJob job = priceCheckQueue.dequeue();
+  priceCheckDone++;
+  updateQueueStatusLabel();
+
+  double price = api->fetchPrice(job.marketName);
+  if (price > 0) {
+    Portfolio portfolio = portfolioManager->getPortfolio(job.portfolioId);
+    if (job.itemIndex < portfolio.items.size()) {
+      PortfolioItem item = portfolio.items[job.itemIndex];
+      item.currentPrice = price;
+      portfolioManager->updateItem(job.portfolioId, job.itemIndex, item);
+    }
+  }
+
+  if (priceCheckDone % 5 == 0)
+    loadPortfolioItems();
+}
+
+void PortfolioWidget::updateQueueStatusLabel() {
+  int remaining = priceCheckQueue.size();
+  if (remaining == 0)
+    return;
+
+  int secondsLeft = remaining * 2;
+  QString timeStr =
+      secondsLeft < 60
+          ? QString("%1s").arg(secondsLeft)
+          : QString("%1m %2s").arg(secondsLeft / 60).arg(secondsLeft % 60);
+
+  queueStatusLabel->setText(QString("Steam: %1 done, %2 remaining (~%3 left)")
+                                .arg(priceCheckDone)
+                                .arg(remaining)
+                                .arg(timeStr));
+}
+
+// ---------------------------------------------------------------------------
+// Portfolio CRUD slots
+// ---------------------------------------------------------------------------
 
 void PortfolioWidget::onPortfolioSelected(int index) {
   if (index < 0)
@@ -709,29 +759,23 @@ void PortfolioWidget::onPortfolioSelected(int index) {
 void PortfolioWidget::onCreatePortfolio() {
   QString name =
       QInputDialog::getText(this, "Create Portfolio", "Portfolio name:");
-
   if (!name.isEmpty()) {
     QString id = portfolioManager->createPortfolio(name);
     refreshPortfolioList();
-
-    int index = portfolioComboBox->findData(id);
-    if (index >= 0) {
-      portfolioComboBox->setCurrentIndex(index);
-    }
+    int idx = portfolioComboBox->findData(id);
+    if (idx >= 0)
+      portfolioComboBox->setCurrentIndex(idx);
   }
 }
 
 void PortfolioWidget::onDeletePortfolio() {
   if (currentPortfolioId.isEmpty())
     return;
-
   Portfolio portfolio = portfolioManager->getPortfolio(currentPortfolioId);
-
-  QMessageBox::StandardButton reply = QMessageBox::question(
+  auto reply = QMessageBox::question(
       this, "Delete Portfolio",
       QString("Delete '%1' and all its items?").arg(portfolio.name),
       QMessageBox::Yes | QMessageBox::No);
-
   if (reply == QMessageBox::Yes) {
     portfolioManager->deletePortfolio(currentPortfolioId);
     refreshPortfolioList();
@@ -741,17 +785,18 @@ void PortfolioWidget::onDeletePortfolio() {
 void PortfolioWidget::onRenamePortfolio() {
   if (currentPortfolioId.isEmpty())
     return;
-
   Portfolio portfolio = portfolioManager->getPortfolio(currentPortfolioId);
-
   QString newName = QInputDialog::getText(
       this, "Rename Portfolio", "New name:", QLineEdit::Normal, portfolio.name);
-
   if (!newName.isEmpty() && newName != portfolio.name) {
     portfolioManager->renamePortfolio(currentPortfolioId, newName);
     refreshPortfolioList();
   }
 }
+
+// ---------------------------------------------------------------------------
+// Add / Remove / Edit item
+// ---------------------------------------------------------------------------
 
 void PortfolioWidget::onAddItem() {
   QDialog dialog(this);
@@ -759,40 +804,69 @@ void PortfolioWidget::onAddItem() {
   dialog.setMinimumWidth(450);
   QFormLayout form(&dialog);
 
-  // Weapon type dropdown
   QComboBox weaponCombo;
-  QStringList weapons = {
-      // Rifles
-      "AK-47", "M4A4", "M4A1-S", "AWP", "FAMAS", "Galil AR", "AUG", "SG 553",
-      "SSG 08", "G3SG1", "SCAR-20",
-      // Pistols
-      "Desert Eagle", "USP-S", "Glock-18", "P2000", "P250", "Five-SeveN",
-      "CZ75-Auto", "Tec-9", "Dual Berettas", "R8 Revolver",
-      // SMGs
-      "MP9", "MAC-10", "PP-Bizon", "MP7", "UMP-45", "P90", "MP5-SD",
-      // Heavy
-      "Nova", "XM1014", "Sawed-Off", "MAG-7", "M249", "Negev",
-      // Knives
-      "★ Karambit", "★ M9 Bayonet", "★ Bayonet", "★ Butterfly Knife",
-      "★ Falchion Knife", "★ Shadow Daggers", "★ Gut Knife", "★ Flip Knife",
-      "★ Navaja Knife", "★ Stiletto Knife", "★ Talon Knife", "★ Ursus Knife",
-      "★ Huntsman Knife", "★ Bowie Knife", "★ Skeleton Knife", "★ Kukri Knife",
-      // Gloves
-      "★ Sport Gloves", "★ Specialist Gloves", "★ Moto Gloves",
-      "★ Bloodhound Gloves", "★ Hand Wraps", "★ Hydra Gloves",
-      "★ Driver Gloves", "★ Broken Fang Gloves",
-      // Other
-      "Zeus x27", "MP5-SD"};
+  QStringList weapons = {"AK-47",
+                         "M4A4",
+                         "M4A1-S",
+                         "AWP",
+                         "FAMAS",
+                         "Galil AR",
+                         "AUG",
+                         "SG 553",
+                         "SSG 08",
+                         "G3SG1",
+                         "SCAR-20",
+                         "Desert Eagle",
+                         "USP-S",
+                         "Glock-18",
+                         "P2000",
+                         "P250",
+                         "Five-SeveN",
+                         "CZ75-Auto",
+                         "Tec-9",
+                         "Dual Berettas",
+                         "R8 Revolver",
+                         "MP9",
+                         "MAC-10",
+                         "PP-Bizon",
+                         "MP7",
+                         "UMP-45",
+                         "P90",
+                         "MP5-SD",
+                         "Nova",
+                         "XM1014",
+                         "Sawed-Off",
+                         "MAG-7",
+                         "M249",
+                         "Negev",
+                         "★ Karambit",
+                         "★ M9 Bayonet",
+                         "★ Bayonet",
+                         "★ Butterfly Knife",
+                         "★ Falchion Knife",
+                         "★ Shadow Daggers",
+                         "★ Gut Knife",
+                         "★ Flip Knife",
+                         "★ Navaja Knife",
+                         "★ Stiletto Knife",
+                         "★ Talon Knife",
+                         "★ Ursus Knife",
+                         "★ Huntsman Knife",
+                         "★ Bowie Knife",
+                         "★ Skeleton Knife",
+                         "★ Kukri Knife",
+                         "★ Sport Gloves",
+                         "★ Specialist Gloves",
+                         "★ Moto Gloves",
+                         "★ Bloodhound Gloves",
+                         "★ Hand Wraps",
+                         "★ Hydra Gloves",
+                         "★ Driver Gloves",
+                         "★ Broken Fang Gloves"};
   weaponCombo.addItems(weapons);
 
-  // Skin name - just the name part e.g. "Redline"
-  QLineEdit skinNameEdit;
-  skinNameEdit.setPlaceholderText("e.g. Redline, Asiimov, Fade...");
-
-  // Preview label showing assembled market name
-  QLabel previewLabel;
-  previewLabel.setStyleSheet("color: gray; font-style: italic;");
-  previewLabel.setText("AK-47 | Redline");
+  QLineEdit skinEdit;
+  skinEdit.setPlaceholderText("e.g. Redline");
 
   QComboBox conditionCombo;
   conditionCombo.addItems({"Factory New", "Minimal Wear", "Field-Tested",
@@ -801,43 +875,21 @@ void PortfolioWidget::onAddItem() {
   QDoubleSpinBox floatSpinBox;
   floatSpinBox.setRange(0.0, 1.0);
   floatSpinBox.setDecimals(6);
-  floatSpinBox.setValue(0.25);
+  floatSpinBox.setValue(0.15);
 
   QSpinBox quantitySpinBox;
-  quantitySpinBox.setRange(1, 100);
+  quantitySpinBox.setRange(1, 9999);
+  quantitySpinBox.setValue(1);
 
   QDoubleSpinBox buyPriceSpinBox;
-  buyPriceSpinBox.setRange(0.0, 100000.0);
-  buyPriceSpinBox.setPrefix("$ ");
+  buyPriceSpinBox.setRange(0.0, 999999.0);
   buyPriceSpinBox.setDecimals(2);
+  buyPriceSpinBox.setPrefix("$");
 
   QLineEdit notesEdit;
 
-  // Lambda to rebuild the preview whenever weapon or skin name changes
-  auto updatePreview = [&]() {
-    QString weapon = weaponCombo.currentText();
-    QString skin = skinNameEdit.text().trimmed();
-
-    QString preview;
-    if (skin.isEmpty()) {
-      preview = weapon;
-    } else if (weapon.startsWith("★")) {
-      // Knives/gloves: "★ Karambit | Fade"
-      preview = weapon + " | " + skin;
-    } else {
-      preview = weapon + " | " + skin;
-    }
-    previewLabel.setText("Market name: " + preview);
-  };
-
-  connect(&weaponCombo, &QComboBox::currentTextChanged,
-          [&](const QString &) { updatePreview(); });
-  connect(&skinNameEdit, &QLineEdit::textChanged,
-          [&](const QString &) { updatePreview(); });
-
   form.addRow("Weapon:", &weaponCombo);
-  form.addRow("Skin Name:", &skinNameEdit);
-  form.addRow("", &previewLabel);
+  form.addRow("Skin Name:", &skinEdit);
   form.addRow("Condition:", &conditionCombo);
   form.addRow("Float:", &floatSpinBox);
   form.addRow("Quantity:", &quantitySpinBox);
@@ -846,63 +898,58 @@ void PortfolioWidget::onAddItem() {
 
   QDialogButtonBox buttons(QDialogButtonBox::Ok | QDialogButtonBox::Cancel);
   form.addRow(&buttons);
-
   connect(&buttons, &QDialogButtonBox::accepted, &dialog, &QDialog::accept);
   connect(&buttons, &QDialogButtonBox::rejected, &dialog, &QDialog::reject);
 
-  if (dialog.exec() == QDialog::Accepted && !skinNameEdit.text().isEmpty()) {
-    QString weapon = weaponCombo.currentText();
-    QString skin = skinNameEdit.text().trimmed();
-    QString condition = conditionCombo.currentText();
+  if (dialog.exec() != QDialog::Accepted)
+    return;
 
-    // Assemble the market_hash_name
-    QString marketName = weapon + " | " + skin + " (" + condition + ")";
+  QString weapon = weaponCombo.currentText();
+  QString skin = skinEdit.text().trimmed();
+  QString condition = conditionCombo.currentText();
 
-    PortfolioItem item;
-    item.skinName = weapon + " | " + skin; // stored without condition
-    item.condition = condition;
-    item.floatValue = floatSpinBox.value();
-    item.quantity = quantitySpinBox.value();
-    item.buyPrice = buyPriceSpinBox.value();
-    item.currentPrice = 0;
-    item.purchaseDate = QDate::currentDate().toString("yyyy-MM-dd");
-    item.notes = notesEdit.text();
-
-    if (api->isValid()) {
-      double price = api->fetchPrice(marketName);
-      if (price > 0) {
-        item.currentPrice = price;
-      }
-    }
-
-    if (item.currentPrice <= 0) {
-      item.currentPrice = item.buyPrice;
-    }
-
-    portfolioManager->addItem(currentPortfolioId, item);
-    loadPortfolioItems();
-    emit portfolioUpdated();
+  if (skin.isEmpty()) {
+    QMessageBox::warning(this, "Invalid", "Skin name cannot be empty.");
+    return;
   }
+
+  QString marketName = weapon + " | " + skin + " (" + condition + ")";
+
+  PortfolioItem item;
+  item.skinName = weapon + " | " + skin;
+  item.condition = condition;
+  item.floatValue = floatSpinBox.value();
+  item.quantity = quantitySpinBox.value();
+  item.buyPrice = buyPriceSpinBox.value();
+  item.currentPrice = 0;
+  item.purchaseDate = QDate::currentDate().toString("yyyy-MM-dd");
+  item.notes = notesEdit.text();
+
+  double price = api->fetchPrice(marketName);
+  item.currentPrice = price > 0.0 ? price : item.buyPrice;
+
+  portfolioManager->addItem(currentPortfolioId, item);
+  loadPortfolioItems();
+  emit portfolioUpdated();
 }
 
 void PortfolioWidget::onRemoveItem() {
   int row = portfolioTable->currentRow();
-  if (row >= 0) {
-    // currentRow() is the visual (sorted) row — retrieve the original data index
-    QTableWidgetItem *nameCell = portfolioTable->item(row, 0);
-    if (!nameCell)
-      return;
-    int dataIndex = nameCell->data(Qt::UserRole).toInt();
+  if (row < 0)
+    return;
 
-    QMessageBox::StandardButton reply =
-        QMessageBox::question(this, "Confirm Remove", "Remove this item?",
-                              QMessageBox::Yes | QMessageBox::No);
+  QTableWidgetItem *nameCell = portfolioTable->item(row, 0);
+  if (!nameCell)
+    return;
+  int dataIndex = nameCell->data(Qt::UserRole).toInt();
 
-    if (reply == QMessageBox::Yes) {
-      portfolioManager->removeItem(currentPortfolioId, dataIndex);
-      loadPortfolioItems();
-      emit portfolioUpdated();
-    }
+  auto reply =
+      QMessageBox::question(this, "Confirm Remove", "Remove this item?",
+                            QMessageBox::Yes | QMessageBox::No);
+  if (reply == QMessageBox::Yes) {
+    portfolioManager->removeItem(currentPortfolioId, dataIndex);
+    loadPortfolioItems();
+    emit portfolioUpdated();
   }
 }
 
@@ -911,7 +958,6 @@ void PortfolioWidget::onEditItem() {
   if (row < 0)
     return;
 
-  // currentRow() is the visual (sorted) row — retrieve the original data index
   QTableWidgetItem *nameCell = portfolioTable->item(row, 0);
   if (!nameCell)
     return;
@@ -921,35 +967,35 @@ void PortfolioWidget::onEditItem() {
   if (dataIndex >= portfolio.items.size())
     return;
 
-  const PortfolioItem &currentItem = portfolio.items[dataIndex];
+  const PortfolioItem &cur = portfolio.items[dataIndex];
 
   QDialog dialog(this);
   dialog.setWindowTitle("Edit Item");
   dialog.setMinimumWidth(400);
   QFormLayout form(&dialog);
 
-  QLineEdit skinNameEdit(currentItem.skinName);
+  QLineEdit skinNameEdit(cur.skinName);
   QComboBox conditionCombo;
-  QDoubleSpinBox floatSpinBox;
-  QSpinBox quantitySpinBox;
-  QDoubleSpinBox buyPriceSpinBox;
-  QLineEdit notesEdit(currentItem.notes);
-
   conditionCombo.addItems({"Factory New", "Minimal Wear", "Field-Tested",
                            "Well-Worn", "Battle-Scarred"});
-  conditionCombo.setCurrentText(currentItem.condition);
+  conditionCombo.setCurrentText(cur.condition);
 
+  QDoubleSpinBox floatSpinBox;
   floatSpinBox.setRange(0.0, 1.0);
   floatSpinBox.setDecimals(6);
-  floatSpinBox.setValue(currentItem.floatValue);
+  floatSpinBox.setValue(cur.floatValue);
 
-  quantitySpinBox.setRange(1, 100);
-  quantitySpinBox.setValue(currentItem.quantity);
+  QSpinBox quantitySpinBox;
+  quantitySpinBox.setRange(1, 9999);
+  quantitySpinBox.setValue(cur.quantity);
 
-  buyPriceSpinBox.setRange(0.0, 100000.0);
-  buyPriceSpinBox.setPrefix("$ ");
+  QDoubleSpinBox buyPriceSpinBox;
+  buyPriceSpinBox.setRange(0.0, 999999.0);
   buyPriceSpinBox.setDecimals(2);
-  buyPriceSpinBox.setValue(currentItem.buyPrice);
+  buyPriceSpinBox.setPrefix("$");
+  buyPriceSpinBox.setValue(cur.buyPrice);
+
+  QLineEdit notesEdit(cur.notes);
 
   form.addRow("Skin Name:", &skinNameEdit);
   form.addRow("Condition:", &conditionCombo);
@@ -960,243 +1006,28 @@ void PortfolioWidget::onEditItem() {
 
   QDialogButtonBox buttons(QDialogButtonBox::Ok | QDialogButtonBox::Cancel);
   form.addRow(&buttons);
-
   connect(&buttons, &QDialogButtonBox::accepted, &dialog, &QDialog::accept);
   connect(&buttons, &QDialogButtonBox::rejected, &dialog, &QDialog::reject);
 
-  if (dialog.exec() == QDialog::Accepted) {
-    PortfolioItem updatedItem = currentItem;
-    updatedItem.skinName = skinNameEdit.text();
-    updatedItem.condition = conditionCombo.currentText();
-    updatedItem.floatValue = floatSpinBox.value();
-    updatedItem.quantity = quantitySpinBox.value();
-    updatedItem.buyPrice = buyPriceSpinBox.value();
-    updatedItem.notes = notesEdit.text();
-
-    portfolioManager->updateItem(currentPortfolioId, dataIndex, updatedItem);
-    loadPortfolioItems();
-    emit portfolioUpdated();
-  }
-}
-
-void PortfolioWidget::onImportFromSteam() {
-  QString steamId = steamIdEdit->text().trimmed();
-
-  if (steamId.isEmpty()) {
-    QMessageBox::warning(this, "Steam ID Required",
-                         "Please enter your Steam ID.\n\n"
-                         "Find it at: https://steamid.io/");
+  if (dialog.exec() != QDialog::Accepted)
     return;
-  }
 
-  steamStatusLabel->setText("Connecting...");
-  steamStatusLabel->setStyleSheet("color: blue;");
-  steamLoginButton->setEnabled(false);
+  PortfolioItem updated = cur;
+  updated.skinName = skinNameEdit.text().trimmed();
+  updated.condition = conditionCombo.currentText();
+  updated.floatValue = floatSpinBox.value();
+  updated.quantity = quantitySpinBox.value();
+  updated.buyPrice = buyPriceSpinBox.value();
+  updated.notes = notesEdit.text();
 
-  steamApi->loginWithSteamId(steamId);
-}
-
-void PortfolioWidget::onSteamLoginSuccessful() {
-  SteamProfile profile = steamApi->getProfile();
-
-  steamStatusLabel->setText(QString("Connected: %1").arg(profile.personaName));
-  steamStatusLabel->setStyleSheet("color: green;");
-  steamLoginButton->setEnabled(true);
-  importSteamButton->setEnabled(true);
-}
-
-void PortfolioWidget::onSteamLoginFailed(const QString &error) {
-  steamStatusLabel->setText(QString("Failed: %1").arg(error));
-  steamStatusLabel->setStyleSheet("color: red;");
-  steamLoginButton->setEnabled(true);
-  importSteamButton->setEnabled(false);
-}
-
-void PortfolioWidget::onSteamInventoryFetched(
-    const QVector<SteamInventoryItem> &items) {
-  if (loadingDialog) {
-    loadingDialog->close();
-    loadingDialog->deleteLater();
-    loadingDialog = nullptr;
-  }
-
-  steamStatusLabel->setText(QString("Found %1 items").arg(items.size()));
-
-  if (items.isEmpty()) {
-    QMessageBox::information(this, "Steam Inventory",
-                             "No tradable CS2 items found.");
-    return;
-  }
-
-  showImportDialog(items);
-}
-
-void PortfolioWidget::showImportDialog(
-    const QVector<SteamInventoryItem> &items) {
-  QDialog dialog(this);
-  dialog.setWindowTitle("Import Steam Inventory");
-  dialog.setMinimumSize(700, 500);
-
-  QVBoxLayout *layout = new QVBoxLayout(&dialog);
-
-  QLabel *infoLabel = new QLabel(
-      QString("Found %1 items. Select items to import:").arg(items.size()));
-  layout->addWidget(infoLabel);
-
-  QHBoxLayout *selectButtons = new QHBoxLayout();
-  QPushButton *selectAll = new QPushButton("Select All");
-  QPushButton *selectNone = new QPushButton("Select None");
-  selectButtons->addWidget(selectAll);
-  selectButtons->addWidget(selectNone);
-  selectButtons->addStretch();
-  layout->addLayout(selectButtons);
-
-  QTableWidget *table = new QTableWidget(&dialog);
-  table->setColumnCount(5);
-  table->setHorizontalHeaderLabels({"", "Name", "Type", "Rarity", "Tradable"});
-  table->setRowCount(items.size());
-  table->horizontalHeader()->setSectionResizeMode(1, QHeaderView::Stretch);
-
-  for (int i = 0; i < items.size(); ++i) {
-    const SteamInventoryItem &item = items[i];
-
-    QTableWidgetItem *checkItem = new QTableWidgetItem();
-    checkItem->setCheckState(Qt::Checked);
-    table->setItem(i, 0, checkItem);
-    table->setItem(i, 1, new QTableWidgetItem(item.marketHashName));
-    table->setItem(i, 2, new QTableWidgetItem(item.type));
-    table->setItem(i, 3, new QTableWidgetItem(item.rarity));
-    table->setItem(i, 4, new QTableWidgetItem(item.tradable ? "Yes" : "No"));
-  }
-
-  table->setColumnWidth(0, 30);
-  layout->addWidget(table);
-
-  QCheckBox *fetchPrices = new QCheckBox("Fetch current prices from API");
-  fetchPrices->setChecked(api->isValid());
-  fetchPrices->setEnabled(api->isValid());
-  layout->addWidget(fetchPrices);
-
-  QDialogButtonBox buttons(QDialogButtonBox::Ok | QDialogButtonBox::Cancel);
-  layout->addWidget(&buttons);
-
-  connect(selectAll, &QPushButton::clicked, [table]() {
-    for (int i = 0; i < table->rowCount(); ++i) {
-      table->item(i, 0)->setCheckState(Qt::Checked);
-    }
-  });
-
-  connect(selectNone, &QPushButton::clicked, [table]() {
-    for (int i = 0; i < table->rowCount(); ++i) {
-      table->item(i, 0)->setCheckState(Qt::Unchecked);
-    }
-  });
-
-  connect(&buttons, &QDialogButtonBox::accepted, &dialog, &QDialog::accept);
-  connect(&buttons, &QDialogButtonBox::rejected, &dialog, &QDialog::reject);
-
-  if (dialog.exec() == QDialog::Accepted) {
-    QVector<PortfolioItem> importItems;
-
-    for (int i = 0; i < items.size(); ++i) {
-      if (table->item(i, 0)->checkState() == Qt::Checked) {
-        const SteamInventoryItem &steamItem = items[i];
-
-        PortfolioItem portfolioItem;
-        portfolioItem.skinName = steamItem.marketHashName;
-        if (!steamItem.exterior.isEmpty()) {
-          portfolioItem.condition = steamItem.exterior;
-        } else {
-          // Parse condition from the end of the market hash name
-          QRegularExpression rx(R"(\(([^)]+)\)$)");
-          QRegularExpressionMatch match = rx.match(steamItem.marketHashName);
-          if (match.hasMatch()) {
-            portfolioItem.condition = match.captured(1);
-          } else {
-            portfolioItem.condition = "Unknown";
-          }
-        }
-        portfolioItem.floatValue = 0.0;
-        portfolioItem.quantity = 1;
-        portfolioItem.buyPrice = 0;
-        portfolioItem.currentPrice = 0;
-        portfolioItem.purchaseDate =
-            QDate::currentDate().toString("yyyy-MM-dd");
-        portfolioItem.iconUrl = steamItem.iconUrl;
-        portfolioItem.rarity = steamItem.rarity;
-
-        importItems.append(portfolioItem);
-      }
-    }
-
-    portfolioManager->importFromSteamInventory(currentPortfolioId, importItems);
-    loadPortfolioItems();
-    emit portfolioUpdated();
-
-    // Queue price checks for all imported items if requested
-    if (fetchPrices->isChecked() && api->isValid()) {
-      Portfolio portfolio = portfolioManager->getPortfolio(currentPortfolioId);
-      int startIndex = portfolio.items.size() - importItems.size();
-
-      priceCheckTotal += importItems.size();
-      priceCheckDone = 0;
-
-      for (int i = 0; i < importItems.size(); ++i) {
-        const PortfolioItem &item = importItems[i];
-        // For Steam imports, skinName is already the full market_hash_name
-        // e.g. "P250 | Sleet (Field-Tested)" - don't append condition again
-        enqueuePriceCheck(currentPortfolioId, startIndex + i, item.skinName);
-      }
-
-      QMessageBox::information(
-          this, "Import Complete",
-          QString(
-              "Imported %1 items.\n\n"
-              "Prices will be fetched in the background at ~1 per 2 seconds "
-              "to respect Steam's rate limit.\n\n"
-              "You can watch progress in the Price Check Queue panel, "
-              "and pause it at any time.")
-              .arg(importItems.size()));
-    } else {
-      QMessageBox::information(
-          this, "Import Complete",
-          QString("Imported %1 items.").arg(importItems.size()));
-    }
-  }
-}
-
-void PortfolioWidget::onRefreshPrices() { updateAllPrices(); }
-
-void PortfolioWidget::updateAllPrices() {
-  if (!api->isValid()) {
-    QMessageBox::warning(this, "API Error", "API not configured.");
-    return;
-  }
-
-  Portfolio portfolio = portfolioManager->getPortfolio(currentPortfolioId);
-
-  int updated = 0;
-  for (int i = 0; i < portfolio.items.size(); ++i) {
-    PortfolioItem item = portfolio.items[i];
-    QString marketName = item.skinName + " (" + item.condition + ")";
-    double price = api->fetchPrice(marketName);
-
-    if (price > 0) {
-      item.currentPrice = price;
-      portfolioManager->updateItem(currentPortfolioId, i, item);
-      updated++;
-    }
-
-    QThread::msleep(100);
-  }
-
+  portfolioManager->updateItem(currentPortfolioId, dataIndex, updated);
   loadPortfolioItems();
-
-  QMessageBox::information(this, "Prices Updated",
-                           QString("Updated %1 items.").arg(updated));
-
   emit portfolioUpdated();
 }
+
+// ---------------------------------------------------------------------------
+// CSV export / import
+// ---------------------------------------------------------------------------
 
 void PortfolioWidget::onExportCSV() {
   if (currentPortfolioId.isEmpty())
@@ -1214,7 +1045,8 @@ void PortfolioWidget::onExportCSV() {
   }
 
   QTextStream out(&file);
-  out << "Skin Name,Condition,Float,Quantity,Buy Price,Current Price,Purchase "
+  out << "Skin Name,Condition,Float,Quantity,Buy Price,Current "
+         "Price,Purchase "
          "Date,Notes\n";
 
   Portfolio portfolio = portfolioManager->getPortfolio(currentPortfolioId);
@@ -1252,23 +1084,19 @@ void PortfolioWidget::onImportCSV() {
   }
 
   QTextStream in(&file);
-  QString header = in.readLine(); // Skip header
+  in.readLine(); // skip header
 
   QVector<PortfolioItem> importItems;
-  int imported = 0;
 
   while (!in.atEnd()) {
     QString line = in.readLine().trimmed();
     if (line.isEmpty())
       continue;
 
-    // Simple CSV parsing
     QStringList parts;
     QString current;
     bool inQuotes = false;
-
-    for (int i = 0; i < line.length(); ++i) {
-      QChar c = line[i];
+    for (QChar c : line) {
       if (c == '"') {
         inQuotes = !inQuotes;
       } else if (c == ',' && !inQuotes) {
@@ -1285,122 +1113,181 @@ void PortfolioWidget::onImportCSV() {
       item.skinName = parts[0].remove('"');
       item.condition = parts[1];
       item.floatValue = parts[2].toDouble();
-      item.quantity = parts[3].toInt();
-      if (item.quantity <= 0)
-        item.quantity = 1;
+      item.quantity = qMax(1, parts[3].toInt());
       item.buyPrice = parts[4].toDouble();
       item.currentPrice = parts[5].toDouble();
       item.purchaseDate = parts[6].remove('"');
-      if (parts.size() >= 8) {
+      if (parts.size() >= 8)
         item.notes = parts[7].remove('"');
-      }
-
-      if (!item.skinName.isEmpty()) {
+      if (!item.skinName.isEmpty())
         importItems.append(item);
-        imported++;
-      }
     }
   }
-
   file.close();
 
-  if (!importItems.isEmpty()) {
-    portfolioManager->importFromSteamInventory(currentPortfolioId, importItems);
-    loadPortfolioItems();
-
-    QMessageBox::information(this, "Import Complete",
-                             QString("Imported %1 items.").arg(imported));
-    emit portfolioUpdated();
-  } else {
+  if (importItems.isEmpty()) {
     QMessageBox::warning(this, "Import Failed", "No valid items found in CSV.");
-  }
-}
-
-void PortfolioWidget::enqueuePriceCheck(const QString &portfolioId,
-                                        int itemIndex,
-                                        const QString &marketName) {
-  PriceCheckJob job;
-  job.portfolioId = portfolioId;
-  job.itemIndex = itemIndex;
-  job.marketName = marketName;
-  priceCheckQueue.enqueue(job);
-
-  queueGroup->show(); // reveal the progress bar
-  updateQueueStatusLabel();
-  queuePauseButton->setEnabled(true);
-
-  if (!priceCheckTimer->isActive() && !priceCheckPaused) {
-    priceCheckTimer->start();
-  }
-}
-
-void PortfolioWidget::onPriceCheckTick() {
-  if (priceCheckQueue.isEmpty()) {
-    priceCheckTimer->stop();
-    queuePauseButton->setEnabled(false);
-    queuePauseButton->setText("Pause");
-    priceCheckPaused = false;
-    queueStatusLabel->setText(
-        QString("Done — %1 items price checked.").arg(priceCheckDone));
-    loadPortfolioItems();
-    calculateStatistics();
-    // Record this as a history snapshot since prices just refreshed
-    portfolioManager->recordHistoryPoint(currentPortfolioId);
-    // Hide the bar after a short delay so the user sees the "Done" message
-    QTimer::singleShot(3000, this, [this]() { queueGroup->hide(); });
     return;
   }
 
-  PriceCheckJob job = priceCheckQueue.dequeue();
-  priceCheckDone++;
-  updateQueueStatusLabel();
+  portfolioManager->importFromSteamInventory(currentPortfolioId, importItems);
+  loadPortfolioItems();
+  QMessageBox::information(
+      this, "Import Complete",
+      QString("Imported %1 items.").arg(importItems.size()));
+  emit portfolioUpdated();
+}
 
-  double price = api->fetchPrice(job.marketName);
+// ---------------------------------------------------------------------------
+// Steam inventory import
+// ---------------------------------------------------------------------------
 
-  if (price > 0) {
-    Portfolio portfolio = portfolioManager->getPortfolio(job.portfolioId);
-    if (job.itemIndex < portfolio.items.size()) {
-      PortfolioItem item = portfolio.items[job.itemIndex];
-      item.currentPrice = price;
-      portfolioManager->updateItem(job.portfolioId, job.itemIndex, item);
+void PortfolioWidget::onImportFromSteam() {
+  steamCompanion->requestInventory();
+}
+void PortfolioWidget::onSteamLoginSuccessful() {}
+void PortfolioWidget::onSteamLoginFailed(const QString &) {}
+
+void PortfolioWidget::onSteamInventoryFetched(
+    const QVector<SteamInventoryItem> &items) {
+  if (loadingDialog) {
+    loadingDialog->close();
+    loadingDialog->deleteLater();
+    loadingDialog = nullptr;
+  }
+  if (items.isEmpty()) {
+    QMessageBox::information(this, "Empty Inventory", "No items found.");
+    return;
+  }
+  showImportDialog(items);
+}
+
+void PortfolioWidget::showImportDialog(
+    const QVector<SteamInventoryItem> &items) {
+  QDialog dialog(this);
+  dialog.setWindowTitle("Import Steam Inventory");
+  dialog.setMinimumSize(700, 500);
+
+  QVBoxLayout *layout = new QVBoxLayout(&dialog);
+  layout->addWidget(new QLabel(
+      QString("Found %1 items. Select items to import:").arg(items.size())));
+
+  QHBoxLayout *selectButtons = new QHBoxLayout();
+  QPushButton *selectAll = new QPushButton("Select All");
+  QPushButton *selectNone = new QPushButton("Select None");
+  selectButtons->addWidget(selectAll);
+  selectButtons->addWidget(selectNone);
+  selectButtons->addStretch();
+  layout->addLayout(selectButtons);
+
+  QTableWidget *table = new QTableWidget(&dialog);
+  table->setColumnCount(5);
+  table->setHorizontalHeaderLabels({"", "Name", "Type", "Rarity", "Tradable"});
+  table->setRowCount(items.size());
+  table->horizontalHeader()->setSectionResizeMode(1, QHeaderView::Stretch);
+
+  for (int i = 0; i < items.size(); ++i) {
+    const SteamInventoryItem &item = items[i];
+    QTableWidgetItem *check = new QTableWidgetItem();
+    check->setCheckState(Qt::Checked);
+    table->setItem(i, 0, check);
+    table->setItem(i, 1, new QTableWidgetItem(item.marketHashName));
+    table->setItem(i, 2, new QTableWidgetItem(item.type));
+    table->setItem(i, 3, new QTableWidgetItem(item.rarity));
+    table->setItem(i, 4, new QTableWidgetItem(item.tradable ? "Yes" : "No"));
+  }
+  table->setColumnWidth(0, 30);
+  layout->addWidget(table);
+
+  QCheckBox *fetchPrices = new QCheckBox("Fetch current prices after import");
+  fetchPrices->setChecked(api->isValid());
+  layout->addWidget(fetchPrices);
+
+  QDialogButtonBox buttons(QDialogButtonBox::Ok | QDialogButtonBox::Cancel);
+  layout->addWidget(&buttons);
+
+  connect(selectAll, &QPushButton::clicked, [table]() {
+    for (int i = 0; i < table->rowCount(); ++i)
+      table->item(i, 0)->setCheckState(Qt::Checked);
+  });
+  connect(selectNone, &QPushButton::clicked, [table]() {
+    for (int i = 0; i < table->rowCount(); ++i)
+      table->item(i, 0)->setCheckState(Qt::Unchecked);
+  });
+  connect(&buttons, &QDialogButtonBox::accepted, &dialog, &QDialog::accept);
+  connect(&buttons, &QDialogButtonBox::rejected, &dialog, &QDialog::reject);
+
+  if (dialog.exec() != QDialog::Accepted)
+    return;
+
+  QVector<PortfolioItem> importItems;
+  for (int i = 0; i < items.size(); ++i) {
+    if (table->item(i, 0)->checkState() != Qt::Checked)
+      continue;
+    const SteamInventoryItem &si = items[i];
+
+    PortfolioItem pi;
+    pi.skinName = si.marketHashName;
+    if (!si.exterior.isEmpty()) {
+      pi.condition = si.exterior;
+    } else {
+      QRegularExpression rx(R"(\(([^)]+)\)$)");
+      QRegularExpressionMatch m = rx.match(si.marketHashName);
+      pi.condition = m.hasMatch() ? m.captured(1) : "Unknown";
     }
+    pi.floatValue = 0.0;
+    pi.quantity = 1;
+    pi.buyPrice = 0;
+    pi.currentPrice = 0;
+    pi.purchaseDate = QDate::currentDate().toString("yyyy-MM-dd");
+    pi.iconUrl = si.iconUrl;
+    pi.rarity = si.rarity;
+    importItems.append(pi);
   }
 
-  // Refresh the table every 5 completed items so the user sees progress
-  if (priceCheckDone % 5 == 0) {
+  portfolioManager->importFromSteamInventory(currentPortfolioId, importItems);
+  loadPortfolioItems();
+  emit portfolioUpdated();
+
+  if (fetchPrices->isChecked() && api->arePricesLoaded()) {
+    Portfolio portfolio = portfolioManager->getPortfolio(currentPortfolioId);
+    int startIndex = portfolio.items.size() - importItems.size();
+    int updated = 0;
+
+    for (int i = 0; i < importItems.size(); ++i) {
+      PortfolioItem item = portfolio.items[startIndex + i];
+      double price = api->fetchPrice(item.skinName);
+      if (price > 0.0) {
+        item.currentPrice = price;
+        portfolioManager->updateItem(currentPortfolioId, startIndex + i, item);
+        ++updated;
+      }
+    }
     loadPortfolioItems();
-  }
-}
-
-void PortfolioWidget::updateQueueStatusLabel() {
-  int remaining = priceCheckQueue.size();
-  if (remaining == 0)
-    return;
-
-  // Estimate time remaining: 2 seconds per item
-  int secondsLeft = remaining * 2;
-  QString timeStr;
-  if (secondsLeft < 60) {
-    timeStr = QString("%1s").arg(secondsLeft);
+    QMessageBox::information(
+        this, "Import Complete",
+        QString("Imported %1 items, priced %2 instantly from cache.")
+            .arg(importItems.size())
+            .arg(updated));
   } else {
-    timeStr = QString("%1m %2s").arg(secondsLeft / 60).arg(secondsLeft % 60);
+    QMessageBox::information(
+        this, "Import Complete",
+        QString("Imported %1 items.").arg(importItems.size()));
   }
-
-  queueStatusLabel->setText(
-      QString("Checking prices: %1 done, %2 remaining (~%3 left)")
-          .arg(priceCheckDone)
-          .arg(remaining)
-          .arg(timeStr));
 }
 
-void PortfolioWidget::onGCLoginClicked()
-{
+// ---------------------------------------------------------------------------
+// GC / Steam companion slots
+// ---------------------------------------------------------------------------
+
+void PortfolioWidget::onGCLoginClicked() {
+  if (gcStatusLabel)
     gcStatusLabel->setText("Fetching inventory...");
-    steamCompanion->requestInventory();
+  steamCompanion->requestInventory();
 }
-
 void PortfolioWidget::onGCImportClicked() {
-  gcStatusLabel->setText("Fetching inventory...");
+  if (gcStatusLabel)
+    gcStatusLabel->setText("Fetching inventory...");
   steamCompanion->requestInventory();
 }
 
@@ -1414,30 +1301,32 @@ void PortfolioWidget::onGCStorageUnitClicked() {
   steamCompanion->requestStorageUnit(casketId);
 }
 
-void PortfolioWidget::onGCInventoryReceived(const QList<GCItem> &items,
-                                             const QList<GCContainer> &containers)
-{
-    if (!containers.isEmpty()) {
-        gcContainers = containers;
-        gcStorageUnitCombo->clear();
-        for (const GCContainer &c : containers)
-            gcStorageUnitCombo->addItem(c.name, c.id);
-        gcStorageUnitCombo->setEnabled(true);
-        gcStorageUnitButton->setEnabled(true);
-    }
+void PortfolioWidget::onGCInventoryReceived(
+    const QList<GCItem> &items, const QList<GCContainer> &containers) {
+  if (!containers.isEmpty()) {
+    gcContainers = containers;
+    gcStorageUnitCombo->clear();
+    for (const GCContainer &c : containers)
+      gcStorageUnitCombo->addItem(c.name, c.id);
+    gcStorageUnitCombo->setEnabled(true);
+    gcStorageUnitButton->setEnabled(true);
+  }
 
-    if (items.isEmpty()) return;
+  if (items.isEmpty())
+    return;
 
-    lastFetchedItems = items;
-    gcStatusLabel->setText(QString("Found %1 items. Click 'Select Items to Import' when ready.")
-                           .arg(items.size()));
-    gcShowImportDialogButton->setEnabled(true);
+  lastFetchedItems = items;
+  gcStatusLabel->setText(
+      QString("Found %1 items. Click 'Select Items to Import' when ready.")
+          .arg(items.size()));
+  gcShowImportDialogButton->setEnabled(true);
 }
 
-void PortfolioWidget::onGCStorageUnitReceived(const QString &casketId,
+void PortfolioWidget::onGCStorageUnitReceived(const QString & /*casketId*/,
                                               const QList<GCItem> &items) {
-  gcStatusLabel->setText(
-      QString("Storage unit loaded: %1 items.").arg(items.size()));
+  if (gcStatusLabel)
+    gcStatusLabel->setText(
+        QString("Storage unit loaded: %1 items.").arg(items.size()));
 
   QVector<SteamInventoryItem> steamItems;
   for (const GCItem &gcItem : items) {
@@ -1451,6 +1340,13 @@ void PortfolioWidget::onGCStorageUnitReceived(const QString &casketId,
     si.rarity = QString::number(gcItem.rarity);
     steamItems.append(si);
   }
+  // Storage unit items are not directly imported into portfolio here;
+  // the Sto
+  // rageUnitWidget handles moves. We just surface them if needed.
+}
 
-
+QString PortfolioWidget::marketName(const PortfolioItem &item) const {
+  if (item.skinName.contains("(" + item.condition + ")"))
+    return item.skinName;
+  return item.skinName + " (" + item.condition + ")";
 }

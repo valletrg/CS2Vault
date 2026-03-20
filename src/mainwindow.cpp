@@ -1,177 +1,287 @@
 #include "mainwindow.h"
-#include "portfoliowidget.h"
-#include "settingswidget.h"
-#include "priceempireapi.h"
-#include "steamapi.h"
 #include "portfoliomanager.h"
+#include "portfoliowidget.h"
+#include "priceempireapi.h"
+#include "settingswidget.h"
+#include "steamapi.h"
 #include "storageunitwidget.h"
 
-#include <QTabWidget>
-#include <QMessageBox>
-#include <QMenuBar>
-#include <QStatusBar>
-#include <QLabel>
-#include <QVBoxLayout>
 #include <QApplication>
-#include <QSettings>
 #include <QCloseEvent>
+#include <QHBoxLayout>
+#include <QLabel>
+#include <QMenuBar>
+#include <QMessageBox>
+#include <QPainter>
+#include <QPixmap>
+#include <QPushButton>
+#include <QSettings>
+#include <QStackedWidget>
+#include <QStatusBar>
+#include <QSvgRenderer>
+#include <QVBoxLayout>
 
 MainWindow::MainWindow(SteamCompanion *companion, QWidget *parent)
-    : QMainWindow(parent)
-    , steamCompanion(companion)
-    , tabWidget(new QTabWidget(this))
-    , api(new PriceEmpireAPI(this))
-    , steamApi(new SteamAPI(this))
-    , portfolioManager(new PortfolioManager(this))
-    , priceUpdateTimer(new QTimer(this))
-{
-    steamCompanion->setParent(this); // takes ownership
-    setupUI();
-    setupConnections();
-    setupSystemTray();
-    loadSettings();
-    
-    connect(priceUpdateTimer, &QTimer::timeout, this, &MainWindow::updatePrices);
-    priceUpdateTimer->start(5 * 60 * 1000);
-    
-    statusBar()->showMessage("Welcome to CS2 Skin Trader!", 5000);
+    : QMainWindow(parent), steamCompanion(companion),
+      api(new PriceEmpireAPI(this)), steamApi(new SteamAPI(this)),
+      portfolioManager(new PortfolioManager(this)),
+      priceUpdateTimer(new QTimer(this)) {
+  steamCompanion->setParent(this);
+  setupUI();
+  setupConnections();
+  setupSystemTray();
+  loadSettings();
+
+  connect(priceUpdateTimer, &QTimer::timeout, this, &MainWindow::updatePrices);
+  priceUpdateTimer->start(5 * 60 * 1000);
+
+  connect(api, &PriceEmpireAPI::pricesLoaded, this, [this]() {
+    statusBar()->showMessage("Prices loaded — ready.", 5000);
+  });
+  connect(api, &PriceEmpireAPI::pricesError, this, [this](const QString &err) {
+    statusBar()->showMessage("Price fetch failed: " + err, 0);
+  });
+
+  QSettings settings("CS2Vault", "Settings");
+  QString savedSource = settings.value("priceSource", "Skinport").toString();
+  static const QMap<QString, QString> urls = {
+      {"Skinport", "https://fursense.lol/prices.json"},
+      {"white.market", "https://fursense.lol/prices-whitemarket.json"},
+      {"market.csgo.com", "https://fursense.lol/prices-marketcsgo.json"}};
+  api->initSourceUrl(
+      urls.value(savedSource, "https://fursense.lol/prices.json"));
+  api->loadPrices();
+
+  itemDb = new ItemDatabase(this);
+  connect(itemDb, &ItemDatabase::loaded, this, [this]() {
+    statusBar()->showMessage(
+        QString("Item database loaded — %1 items.").arg(itemDb->itemCount()),
+        3000);
+  });
+  connect(itemDb, &ItemDatabase::error, this, [this](const QString &err) {
+    qWarning() << "ItemDatabase error:" << err;
+  });
+  itemDb->load();
+
+  statusBar()->showMessage("Loading prices...", 0);
 }
 
-MainWindow::~MainWindow()
-{
-    saveSettings();
-}
+MainWindow::~MainWindow() { saveSettings(); }
 
-void MainWindow::setupUI()
-{
-    setWindowTitle("CS2Vault");
-    setMinimumSize(1100, 750);
-    
-    QWidget *centralWidget = new QWidget(this);
-    QVBoxLayout *mainLayout = new QVBoxLayout(centralWidget);
+void MainWindow::setupUI() {
+  setWindowTitle("CS2Vault");
+  setMinimumSize(1100, 750);
 
-    storageUnitWidget = new StorageUnitWidget(steamCompanion, this);
-    portfolioWidget = new PortfolioWidget(api, steamApi, portfolioManager, steamCompanion, this);
-    settingsWidget = new SettingsWidget(api, this);
-    
+  // ── Central widget with sidebar + content ─────────────────────────────────
+  QWidget *central = new QWidget(this);
+  QHBoxLayout *rootLayout = new QHBoxLayout(central);
+  rootLayout->setContentsMargins(0, 0, 0, 0);
+  rootLayout->setSpacing(0);
 
-    tabWidget->addTab(storageUnitWidget, "Storage Units");
-    tabWidget->addTab(portfolioWidget, "Portfolio");
-    tabWidget->addTab(settingsWidget, "Settings");
-    
-    mainLayout->addWidget(tabWidget);
-    setCentralWidget(centralWidget);
-    
-    QMenu *fileMenu = menuBar()->addMenu("&File");
-    QAction *exitAction = fileMenu->addAction("E&xit");
-    exitAction->setShortcut(QKeySequence::Quit);
-    connect(exitAction, &QAction::triggered, qApp, &QApplication::quit);
-    
-    QMenu *toolsMenu = menuBar()->addMenu("&Tools");
-    QAction *updateAction = toolsMenu->addAction("&Update Prices");
-    updateAction->setShortcut(QKeySequence::Refresh);
-    connect(updateAction, &QAction::triggered, this, &MainWindow::updatePrices);
-    
-    QMenu *helpMenu = menuBar()->addMenu("&Help");
-    helpMenu->addAction("&About", this, &MainWindow::onAboutClicked);
-    helpMenu->addAction("About &Qt", qApp, &QApplication::aboutQt);
-    
-    statusBar()->addPermanentWidget(new QLabel("Ready", this));
-}
+  // ── Sidebar ───────────────────────────────────────────────────────────────
+  sidebar = new QWidget(central);
+  sidebar->setObjectName("sidebar");
+  sidebar->setFixedWidth(200);
 
-void MainWindow::setupConnections()
-{
-    connect(settingsWidget, &SettingsWidget::settingsChanged,
-        this, &MainWindow::loadSettings);
+  QVBoxLayout *sideLayout = new QVBoxLayout(sidebar);
+  sideLayout->setContentsMargins(0, 0, 0, 0);
+  sideLayout->setSpacing(0);
 
-    connect(portfolioWidget, &PortfolioWidget::portfolioUpdated,
-            this, [this]() {
-        statusBar()->showMessage("Portfolio updated", 3000);
-    });
-}
+  // Logo / app name area
+  QLabel *logoLabel = new QLabel("CS2VAULT", sidebar);
+  logoLabel->setObjectName("sidebarLogo");
+  logoLabel->setAlignment(Qt::AlignCenter);
+  logoLabel->setFixedHeight(80);
+  sideLayout->addWidget(logoLabel);
 
-void MainWindow::setupSystemTray()
-{
-    if (!QSystemTrayIcon::isSystemTrayAvailable()) {
-        return;
-    }
-    
-    trayIcon = new QSystemTrayIcon(this);
-    trayIcon->setToolTip("CS2Vault");
-    
-    trayMenu = new QMenu(this);
-    trayMenu->addAction("Show", this, &QWidget::showNormal);
-    trayMenu->addAction("Hide", this, &QWidget::hide);
-    trayMenu->addSeparator();
-    trayMenu->addAction("Exit", qApp, &QApplication::quit);
-    
-    trayIcon->setContextMenu(trayMenu);
-    trayIcon->show();
-}
+  // Nav buttons — unicode icons + label
+  struct NavItem {
+    QString iconPath;
+    QString label;
+  };
+  QList<NavItem> items = {
+      {":/icons/storage.svg", "Storage Units"},
+      {":/icons/portfolio.svg", "Portfolio"},
+      {":/icons/settings.svg", "Settings"},
+  };
 
-void MainWindow::loadSettings()
-{
-    QSettings settings("CS2Vault", "Settings");
+  for (int i = 0; i < items.size(); ++i) {
+    QPushButton *btn = new QPushButton(sidebar);
+    btn->setObjectName("navButton");
+    btn->setCheckable(true);
+    btn->setFixedHeight(52);
+    btn->setCursor(Qt::PointingHandCursor);
+    btn->setText(items[i].label);
 
-    QByteArray geometry = settings.value("geometry").toByteArray();
-    if (!geometry.isEmpty())
-        restoreGeometry(geometry);
-
-    int interval = settings.value("updateInterval", 5).toInt();
-    priceUpdateTimer->setInterval(interval * 60 * 1000);
-
-    if (settings.value("autoUpdate", true).toBool())
-        priceUpdateTimer->start();
-    else
-        priceUpdateTimer->stop();
-}
-
-void MainWindow::saveSettings()
-{
-    QSettings settings("CS2Vault", "Settings");
-    settings.setValue("geometry", saveGeometry());
-}
-
-void MainWindow::updatePrices()
-{
-    QSettings settings("CS2Vault", "Settings");
-    if (!settings.value("autoUpdate", true).toBool()) return;
-
-    if (!api->isValid()) {
-        statusBar()->showMessage("API not configured", 5000);
-        return;
+    QSvgRenderer renderer(items[i].iconPath);
+    if (renderer.isValid()) {
+      QPixmap px(18, 18);
+      px.fill(Qt::transparent);
+      QPainter painter(&px);
+      renderer.render(&painter);
+      painter.setCompositionMode(QPainter::CompositionMode_SourceIn);
+      painter.fillRect(px.rect(), QColor("#4fc3f7"));
+      painter.end();
+      btn->setIcon(QIcon(px));
+      btn->setIconSize(QSize(18, 18));
     }
 
-    statusBar()->showMessage("Updating prices...", 2000);
-    portfolioWidget->updateAllPrices();
+    btn->setStyleSheet("text-align: left; padding-left: 16px;");
+    connect(btn, &QPushButton::clicked, this, [this, i]() { switchToPage(i); });
+    sideLayout->addWidget(btn);
+    navButtons.append(btn);
+  }
+
+  sideLayout->addStretch();
+
+  // Version label at bottom of sidebar
+  QLabel *versionLabel = new QLabel("v1.2.0", sidebar);
+  versionLabel->setObjectName("sidebarVersion");
+  versionLabel->setAlignment(Qt::AlignCenter);
+  versionLabel->setFixedHeight(32);
+  sideLayout->addWidget(versionLabel);
+
+  updateChecker = new UpdateChecker(this);
+
+  // Update checker
+  connect(updateChecker, &UpdateChecker::updateAvailable, this,
+          [this](const QString &latest, const QString &message) {
+            // Show a non-intrusive banner in the status bar
+            QString text =
+                QString("Update available: v%1 — github.com/valletrg/CS2Vault")
+                    .arg(latest);
+            if (!message.isEmpty())
+              text += " — " + message;
+            statusBar()->showMessage(text, 0); // 0 = stays permanently
+          });
+
+  connect(updateChecker, &UpdateChecker::upToDate, this,
+          []() { qInfo() << "CS2Vault is up to date."; });
+
+  QTimer::singleShot(3000, updateChecker, &UpdateChecker::check);
+
+  // ── Stacked content area ──────────────────────────────────────────────────
+  stackedWidget = new QStackedWidget(central);
+  stackedWidget->setObjectName("contentArea");
+
+  storageUnitWidget = new StorageUnitWidget(steamCompanion, api, this);
+  portfolioWidget = new PortfolioWidget(api, steamApi, portfolioManager,
+                                        steamCompanion, this);
+  settingsWidget = new SettingsWidget(api, portfolioManager, this);
+
+  stackedWidget->addWidget(storageUnitWidget);
+  stackedWidget->addWidget(portfolioWidget);
+  stackedWidget->addWidget(settingsWidget);
+
+  rootLayout->addWidget(sidebar);
+  rootLayout->addWidget(stackedWidget, 1);
+
+  setCentralWidget(central);
+
+  // Select first page
+  switchToPage(0);
+
+  // ── Menu bar ──────────────────────────────────────────────────────────────
+  QMenu *fileMenu = menuBar()->addMenu("&File");
+  QAction *exitAction = fileMenu->addAction("E&xit");
+  exitAction->setShortcut(QKeySequence::Quit);
+  connect(exitAction, &QAction::triggered, qApp, &QApplication::quit);
+
+  QMenu *toolsMenu = menuBar()->addMenu("&Tools");
+  QAction *updateAction = toolsMenu->addAction("&Update Prices");
+  updateAction->setShortcut(QKeySequence::Refresh);
+  connect(updateAction, &QAction::triggered, this, &MainWindow::updatePrices);
+
+  QMenu *helpMenu = menuBar()->addMenu("&Help");
+  helpMenu->addAction("&About", this, &MainWindow::onAboutClicked);
+  helpMenu->addAction("About &Qt", qApp, &QApplication::aboutQt);
+
+  statusBar()->addPermanentWidget(new QLabel("Ready", this));
 }
 
-void MainWindow::showNotification(const QString &title, const QString &message)
-{
-    if (trayIcon && trayIcon->isVisible()) {
-        trayIcon->showMessage(title, message, QSystemTrayIcon::Information, 3000);
-    }
+void MainWindow::switchToPage(int index) {
+  stackedWidget->setCurrentIndex(index);
+  for (int i = 0; i < navButtons.size(); ++i)
+    navButtons[i]->setChecked(i == index);
 }
 
-void MainWindow::onAboutClicked()
-{
-QMessageBox::about(this, "About CS2Vault",
-    "<h3>CS2Vault v1.0</h3>"
-    "<p>A CS2 inventory manager and portfolio tracker for Linux.</p>"
-    "<ul>"
-    "<li>Steam inventory import via GC</li>"
-    "<li>Storage unit management</li>"
-    "<li>Portfolio tracking with price history</li>"
-    "<li>Steam Market price checking</li>"
-    "</ul>");
+void MainWindow::setupConnections() {
+  connect(settingsWidget, &SettingsWidget::settingsChanged, this,
+          &MainWindow::loadSettings);
+  connect(portfolioWidget, &PortfolioWidget::portfolioUpdated, this,
+          [this]() { statusBar()->showMessage("Portfolio updated", 3000); });
 }
 
-void MainWindow::closeEvent(QCloseEvent *event)
-{
-    if (trayIcon && trayIcon->isVisible()) {
-        hide();
-        event->ignore();
-    } else {
-        event->accept();
-    }
+void MainWindow::setupSystemTray() {
+  if (!QSystemTrayIcon::isSystemTrayAvailable())
+    return;
+
+  trayIcon = new QSystemTrayIcon(this);
+  trayIcon->setToolTip("CS2Vault");
+
+  trayMenu = new QMenu(this);
+  trayMenu->addAction("Show", this, &QWidget::showNormal);
+  trayMenu->addAction("Hide", this, &QWidget::hide);
+  trayMenu->addSeparator();
+  trayMenu->addAction("Exit", qApp, &QApplication::quit);
+
+  trayIcon->setContextMenu(trayMenu);
+  trayIcon->show();
+}
+
+void MainWindow::loadSettings() {
+  QSettings settings("CS2Vault", "Settings");
+
+  QByteArray geometry = settings.value("geometry").toByteArray();
+  if (!geometry.isEmpty())
+    restoreGeometry(geometry);
+
+  int interval = settings.value("updateInterval", 5).toInt();
+  priceUpdateTimer->setInterval(interval * 60 * 1000);
+
+  if (settings.value("autoUpdate", true).toBool())
+    priceUpdateTimer->start();
+  else
+    priceUpdateTimer->stop();
+}
+
+void MainWindow::saveSettings() {
+  QSettings settings("CS2Vault", "Settings");
+  settings.setValue("geometry", saveGeometry());
+}
+
+void MainWindow::updatePrices() {
+  QSettings settings("CS2Vault", "Settings");
+  if (!settings.value("autoUpdate", true).toBool())
+    return;
+  statusBar()->showMessage("Refreshing prices...", 0);
+  api->reloadPrices();
+}
+
+void MainWindow::showNotification(const QString &title,
+                                  const QString &message) {
+  if (trayIcon && trayIcon->isVisible())
+    trayIcon->showMessage(title, message, QSystemTrayIcon::Information, 3000);
+}
+
+void MainWindow::onAboutClicked() {
+  QMessageBox::about(
+      this, "About CS2Vault",
+      "<h3>CS2Vault v1.2</h3>"
+      "<p>A CS2 inventory manager and portfolio tracker for Linux.</p>"
+      "<ul>"
+      "<li>Steam inventory import via GC</li>"
+      "<li>Storage unit management</li>"
+      "<li>Portfolio tracking with price history</li>"
+      "<li>Steam Market price checking</li>"
+      "</ul>");
+}
+
+void MainWindow::closeEvent(QCloseEvent *event) {
+  if (trayIcon && trayIcon->isVisible()) {
+    hide();
+    event->ignore();
+  } else {
+    event->accept();
+  }
 }
