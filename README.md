@@ -128,6 +128,25 @@ Your login is saved locally in an encrypted file. Subsequent launches connect au
 
 ---
 
+
+## Support CS2Vault
+
+If you find CS2Vault useful, contributions are always appreciated!
+
+🟠 **Bitcoin (BTC)**
+`bc1q6586wt0ttsarrlepwp0kp7ve78f4ua22sry0n9`
+
+🔵 **Litecoin (LTC)**
+`ltc1qfwks2uzeh2lwrrz7kpymguqlmwj0thv9226tgy`
+
+🟣 **Ethereum (ETH)**
+`0xBA74E8cE7D6062066b6D43113C73C36E23F4e6D6`
+
+🟢 **Solana (SOL)**
+`HUmRbrVBjDz137dB6Sfzytsd64fuKUBgWC3UDmLPEhWi`
+
+---
+
 ## Contributing
 
 Pull requests are welcome. For major changes please open an issue first to discuss what you would like to change.
