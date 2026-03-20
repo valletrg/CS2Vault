@@ -7,6 +7,7 @@
 #include <QFile>
 #include <QFont>
 #include <QHBoxLayout>
+#include <QJsonDocument>
 #include <QJsonObject>
 #include <QNetworkReply>
 #include <QNetworkRequest>
