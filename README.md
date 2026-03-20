@@ -37,6 +37,9 @@ You can switch between sources in the Settings tab. Prices are cached locally an
 
 ## Safety FAQ
 
+**Is the browser token login safe?**
+Yes. The token from `steamcommunity.com/chat/clientjstoken` is a one-time web token that expires shortly after use. It is not your password, cannot be reused once consumed, and does not grant permanent access to your account. Steam generates a new one each time you visit that page. This login method is used by several trusted CS2 tools for the same reason, it avoids ever handling your actual credentials.
+
 **Is this safe to use with my Steam account?**
 Yes. CS2Vault never asks for your Steam password. Login uses Steam's official QR code flow or a browser refresh token, the same methods used by Steam's own mobile app and other trusted tools. Your credentials never leave Steam's own servers.
 

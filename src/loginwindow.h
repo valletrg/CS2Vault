@@ -31,18 +31,13 @@ private:
   void setupWelcomePage();
   void setupQRPage();
   void setupTokenPage();
-  void setupOnboardingPage();
 
   void showWelcomePage();
   void showQRPage();
   void showTokenPage();
-  void showOnboardingPage();
 
   void setStatus(const QString &text, const QString &color = "gray");
   void handleLoginSuccess();
-
-  // Updates the onboarding UI when a source card is selected.
-  void selectSource(const QString &source);
 
   SteamCompanion *companion;
   QNetworkAccessManager *nam;
@@ -69,25 +64,6 @@ private:
   QLineEdit *tokenPasteEdit = nullptr;
   QPushButton *tokenSubmitButton = nullptr;
   QPushButton *tokenBackButton = nullptr;
-
-  // ── Onboarding page ───────────────────────
-  QWidget *onboardingPage = nullptr;
-
-  // Source selection cards
-  QPushButton *cardCSFloat = nullptr;
-  QPushButton *cardBuff = nullptr;
-  QPushButton *cardSteam = nullptr;
-
-  // Key / cookie input area (shown/hidden depending on selection)
-  QWidget *keyInputArea = nullptr;
-  QLabel *keyInputLabel = nullptr;
-  QLineEdit *keyInputEdit = nullptr;
-  QLabel *keyInputHint = nullptr;
-
-  QPushButton *onboardingNextButton = nullptr;
-  QLabel *onboardingErrorLabel = nullptr;
-
-  QString selectedSource; // "csfloat", "buff", "steam"
 };
 
 #endif // LOGINWINDOW_H

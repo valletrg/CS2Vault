@@ -1,5 +1,7 @@
 #include "loginwindow.h"
 
+#include <QApplication>
+#include <QClipboard>
 #include <QCoreApplication>
 #include <QDesktopServices>
 #include <QFile>
@@ -8,8 +10,10 @@
 #include <QJsonObject>
 #include <QNetworkReply>
 #include <QNetworkRequest>
+#include <QPainter>
 #include <QPixmap>
 #include <QSettings>
+#include <QSvgRenderer>
 #include <QTimer>
 #include <QUrl>
 #include <QUrlQuery>
@@ -148,6 +152,10 @@ LoginWindow::LoginWindow(QWidget *parent)
 
   connect(companion, &SteamCompanion::errorOccurred, this,
           [this](const QString &err) {
+            // Ignore errors after we've already logged in successfully
+            if (stack->currentWidget() == welcomePage)
+              return;
+
             if (stack->currentWidget() == qrPage) {
               qrStatusLabel->setText("Error: " + err);
               qrStatusLabel->setStyleSheet("color: #DC4646; font-size: 11px;");
@@ -162,9 +170,9 @@ LoginWindow::LoginWindow(QWidget *parent)
               tokenProgressBar->setValue(0);
               tokenSubmitButton->setEnabled(true);
               tokenBackButton->setEnabled(true);
-            } else {
-              showWelcomePage();
             }
+            // If neither page is active, we're already logged in — ignore the
+            // error
           });
 }
 
@@ -185,6 +193,9 @@ void LoginWindow::tryAutoLogin() {
   for (const QString &p : paths) {
     if (QFile::exists(p)) {
       companion->start();
+      QTimer::singleShot(1000, this, [this]() {
+        companion->sendCommand(QJsonObject{{"command", "start_login"}});
+      });
       return;
     }
   }
@@ -207,12 +218,10 @@ void LoginWindow::setupUI() {
   setupWelcomePage();
   setupQRPage();
   setupTokenPage();
-  setupOnboardingPage();
 
   stack->addWidget(welcomePage);
   stack->addWidget(qrPage);
   stack->addWidget(tokenPage);
-  stack->addWidget(onboardingPage);
 
   showWelcomePage();
 }
@@ -348,17 +357,59 @@ void LoginWindow::setupTokenPage() {
   tokenOpenBrowserButton->setFixedHeight(40);
   layout->addWidget(tokenOpenBrowserButton);
 
+  QLabel *safetyNote =
+      new QLabel("Browser tokens are one-time use and expire shortly after "
+                 "being used. "
+                 "They cannot be used to access your account after login and "
+                 "do not expose your password.",
+                 tokenPage);
+  safetyNote->setWordWrap(true);
+  safetyNote->setStyleSheet(
+      "color: #4fc3f7; font-size: 11px; padding: 6px 0px;");
+  layout->addWidget(safetyNote);
+
   QLabel *step2 = new QLabel(
-      "Step 2: Copy the value next to \"token\" and paste it below", tokenPage);
+      "Step 2: Select all the text on that page (Ctrl+A) and paste it below",
+      tokenPage);
   step2->setStyleSheet("color: #aaa; font-size: 12px;");
   step2->setAlignment(Qt::AlignCenter);
   step2->setWordWrap(true);
   layout->addWidget(step2);
 
+  QHBoxLayout *pasteLayout = new QHBoxLayout();
+  pasteLayout->setSpacing(6);
+
   tokenPasteEdit = new QLineEdit(tokenPage);
-  tokenPasteEdit->setPlaceholderText("Paste token here...");
+  tokenPasteEdit->setPlaceholderText("Paste the entire page content here...");
   tokenPasteEdit->setFixedHeight(40);
-  layout->addWidget(tokenPasteEdit);
+
+  QPushButton *pasteButton = new QPushButton(tokenPage);
+  pasteButton->setFixedSize(40, 40);
+  pasteButton->setToolTip("Paste from clipboard");
+
+  QSvgRenderer renderer(QString(":/icons/clipboard.svg"));
+  if (renderer.isValid()) {
+    QPixmap px(18, 18);
+    px.fill(Qt::transparent);
+    QPainter painter(&px);
+    renderer.render(&painter);
+    painter.setCompositionMode(QPainter::CompositionMode_SourceIn);
+    painter.fillRect(px.rect(), QColor("#4fc3f7"));
+    painter.end();
+    pasteButton->setIcon(QIcon(px));
+    pasteButton->setIconSize(QSize(18, 18));
+  }
+
+  pasteLayout->addWidget(tokenPasteEdit);
+  pasteLayout->addWidget(pasteButton);
+  layout->addLayout(pasteLayout);
+
+  connect(pasteButton, &QPushButton::clicked, this, [this]() {
+    QClipboard *clipboard = QApplication::clipboard();
+    QString text = clipboard->text();
+    if (!text.isEmpty())
+      tokenPasteEdit->setText(text);
+  });
 
   tokenSubmitButton = new QPushButton("Sign In", tokenPage);
   tokenSubmitButton->setObjectName("primary");
@@ -388,12 +439,40 @@ void LoginWindow::setupTokenPage() {
   });
 
   connect(tokenSubmitButton, &QPushButton::clicked, this, [this]() {
-    QString token = tokenPasteEdit->text().trimmed();
-    if (token.isEmpty()) {
-      tokenStatusLabel->setText("Please paste a token first.");
-      tokenStatusLabel->setStyleSheet("color: #DC4646; font-size: 11px;");
+    QString raw = tokenPasteEdit->text().trimmed();
+    if (raw.isEmpty()) {
+      tokenStatusLabel->setText("Please paste the page content first.");
       return;
     }
+
+    QString token;
+    QString steamId;
+
+    // Try standard JSON first
+    QJsonDocument doc = QJsonDocument::fromJson(raw.toUtf8());
+    if (doc.isObject()) {
+      token = doc.object()["token"].toString();
+      steamId = doc.object()["steamid"].toString();
+    } else {
+      // Handle pretty-printed format with unquoted keys
+      QRegularExpression tokenRx("token[\"\\s]*:[\"\\s]*\"([^\"]+)\"");
+      QRegularExpression steamRx("steamid[\"\\s]*:[\"\\s]*\"([^\"]+)\"");
+
+      QRegularExpressionMatch tokenMatch = tokenRx.match(raw);
+      QRegularExpressionMatch steamMatch = steamRx.match(raw);
+
+      if (tokenMatch.hasMatch())
+        token = tokenMatch.captured(1);
+      if (steamMatch.hasMatch())
+        steamId = steamMatch.captured(1);
+    }
+
+    if (token.isEmpty()) {
+      tokenStatusLabel->setText("Could not find token — try copying the RAW "
+                                "DATA, not formatted JSON.");
+      return;
+    }
+
     tokenSubmitButton->setEnabled(false);
     tokenBackButton->setEnabled(false);
     tokenStatusLabel->setText("Logging in...");
@@ -403,9 +482,11 @@ void LoginWindow::setupTokenPage() {
     if (!companion->isRunning())
       companion->start();
 
-    QTimer::singleShot(500, this, [this, token]() {
-      companion->sendCommand(
-          QJsonObject{{"command", "login_with_web_token"}, {"token", token}});
+    QTimer::singleShot(500, this, [this, token, steamId]() {
+      QJsonObject cmd{{"command", "login_with_web_token"}, {"token", token}};
+      if (!steamId.isEmpty())
+        cmd["steamid"] = steamId;
+      companion->sendCommand(cmd);
     });
   });
 
@@ -413,195 +494,6 @@ void LoginWindow::setupTokenPage() {
           &QPushButton::click);
   connect(tokenBackButton, &QPushButton::clicked, this,
           &LoginWindow::showWelcomePage);
-}
-
-void LoginWindow::setupOnboardingPage() {
-  onboardingPage = new QWidget();
-  QVBoxLayout *layout = new QVBoxLayout(onboardingPage);
-  layout->setContentsMargins(36, 32, 36, 32);
-  layout->setSpacing(14);
-
-  // Header
-  QLabel *title = new QLabel("Choose a Price Source", onboardingPage);
-  QFont f;
-  f.setPointSize(16);
-  f.setBold(true);
-  title->setFont(f);
-  title->setAlignment(Qt::AlignCenter);
-  layout->addWidget(title);
-
-  QLabel *subtitle = new QLabel(
-      "CS2Vault needs a pricing source to show current skin values.\n"
-      "You can change this any time in Settings.",
-      onboardingPage);
-  subtitle->setAlignment(Qt::AlignCenter);
-  subtitle->setWordWrap(true);
-  subtitle->setStyleSheet("color: #666; font-size: 12px;");
-  layout->addWidget(subtitle);
-
-  // ── Source cards ──────────────────────────────────────────────────────
-
-  // CSFloat card
-  cardCSFloat = new QPushButton(onboardingPage);
-  cardCSFloat->setObjectName("sourceCard");
-  cardCSFloat->setText(
-      "  CSFloat  \u2605  Recommended\n"
-      "  Real western market prices. Free API key — anyone can sign up.");
-  cardCSFloat->setFixedHeight(64);
-  cardCSFloat->setCheckable(false);
-  layout->addWidget(cardCSFloat);
-
-  // Buff163 card
-  cardBuff = new QPushButton(onboardingPage);
-  cardBuff->setObjectName("sourceCard");
-  cardBuff->setText(
-      "  Buff163\n"
-      "  Best prices globally. Requires an existing Buff163 account.");
-  cardBuff->setFixedHeight(64);
-  layout->addWidget(cardBuff);
-
-  // Steam card
-  cardSteam = new QPushButton(onboardingPage);
-  cardSteam->setObjectName("sourceCard");
-  cardSteam->setText(
-      "  Steam Market  \u2014  Skip for now\n"
-      "  No account needed but prices are higher than real market value.");
-  cardSteam->setFixedHeight(64);
-  layout->addWidget(cardSteam);
-
-  // ── Key / cookie input (shown when CSFloat or Buff selected) ─────────
-
-  keyInputArea = new QWidget(onboardingPage);
-  QVBoxLayout *keyLayout = new QVBoxLayout(keyInputArea);
-  keyLayout->setContentsMargins(0, 0, 0, 0);
-  keyLayout->setSpacing(6);
-
-  keyInputLabel = new QLabel(keyInputArea);
-  keyInputLabel->setStyleSheet(
-      "color: #ccc; font-size: 12px; font-weight: bold;");
-
-  keyInputEdit = new QLineEdit(keyInputArea);
-  keyInputEdit->setFixedHeight(38);
-  keyInputEdit->setEchoMode(QLineEdit::Password);
-
-  keyInputHint = new QLabel(keyInputArea);
-  keyInputHint->setWordWrap(true);
-  keyInputHint->setOpenExternalLinks(true);
-  keyInputHint->setStyleSheet("color: #555; font-size: 11px;");
-
-  keyLayout->addWidget(keyInputLabel);
-  keyLayout->addWidget(keyInputEdit);
-  keyLayout->addWidget(keyInputHint);
-
-  keyInputArea->hide();
-  layout->addWidget(keyInputArea);
-
-  // ── Error label ───────────────────────────────────────────────────────
-
-  onboardingErrorLabel = new QLabel(onboardingPage);
-  onboardingErrorLabel->setAlignment(Qt::AlignCenter);
-  onboardingErrorLabel->setStyleSheet("color: #DC4646; font-size: 11px;");
-  onboardingErrorLabel->hide();
-  layout->addWidget(onboardingErrorLabel);
-
-  layout->addStretch();
-
-  // ── Get Started button ────────────────────────────────────────────────
-
-  onboardingNextButton = new QPushButton("Get Started", onboardingPage);
-  onboardingNextButton->setObjectName("primary");
-  onboardingNextButton->setFixedHeight(48);
-  onboardingNextButton->setEnabled(false); // enabled once a source is picked
-  layout->addWidget(onboardingNextButton);
-
-  // ── Wire up card clicks ───────────────────────────────────────────────
-
-  connect(cardCSFloat, &QPushButton::clicked, this,
-          [this]() { selectSource("csfloat"); });
-  connect(cardBuff, &QPushButton::clicked, this,
-          [this]() { selectSource("buff"); });
-  connect(cardSteam, &QPushButton::clicked, this,
-          [this]() { selectSource("steam"); });
-
-  // ── Get Started clicked ───────────────────────────────────────────────
-
-  connect(onboardingNextButton, &QPushButton::clicked, this, [this]() {
-    // Validate key/cookie if needed
-    if ((selectedSource == "csfloat" || selectedSource == "buff") &&
-        keyInputEdit->text().trimmed().isEmpty()) {
-      onboardingErrorLabel->setText(
-          selectedSource == "csfloat"
-              ? "Please paste your CSFloat API key, or choose Steam to skip."
-              : "Please paste your Buff163 session cookie, or choose Steam to "
-                "skip.");
-      onboardingErrorLabel->show();
-      return;
-    }
-
-    // Persist settings
-    QSettings settings("CS2Vault", "Settings");
-    settings.setValue("onboardingComplete", true);
-
-    if (selectedSource == "csfloat") {
-      settings.setValue("priceSource", "CSFloat");
-      settings.setValue("csFloatKey", keyInputEdit->text().trimmed());
-    } else if (selectedSource == "buff") {
-      settings.setValue("priceSource", "Buff163 (coming soon)");
-      settings.setValue("buff163Cookie", keyInputEdit->text().trimmed());
-    } else {
-      settings.setValue("priceSource", "Steam Market");
-    }
-
-    emit loginComplete();
-  });
-}
-
-// ---------------------------------------------------------------------------
-// Source card selection
-// ---------------------------------------------------------------------------
-
-void LoginWindow::selectSource(const QString &source) {
-  selectedSource = source;
-  onboardingErrorLabel->hide();
-
-  // Reset all cards to unselected style
-  for (QPushButton *card : {cardCSFloat, cardBuff, cardSteam})
-    card->setObjectName("sourceCard");
-
-  // Highlight selected card
-  if (source == "csfloat")
-    cardCSFloat->setObjectName("sourceCardSelected");
-  else if (source == "buff")
-    cardBuff->setObjectName("sourceCardSelected");
-  else if (source == "steam")
-    cardSteam->setObjectName("sourceCardSelected");
-
-  // Re-apply stylesheet so Qt picks up the name change
-  setStyleSheet(styleSheet());
-
-  // Show/hide key input
-  if (source == "csfloat") {
-    keyInputLabel->setText("CSFloat API Key");
-    keyInputEdit->setPlaceholderText("Paste your API key here...");
-    keyInputHint->setText(
-        "<a href='https://csfloat.com/profile' style='color:#5b9bd5;'>"
-        "Get your free key at csfloat.com/profile</a> → Developer tab.");
-    keyInputArea->show();
-  } else if (source == "buff") {
-    keyInputLabel->setText("Buff163 Session Cookie");
-    keyInputEdit->setPlaceholderText("Paste your session cookie here...");
-    keyInputHint->setText(
-        "Log in to buff163.com in your browser, open DevTools → "
-        "Application → Cookies, and copy the value of the 'session' cookie.");
-    keyInputArea->show();
-  } else {
-    keyInputArea->hide();
-  }
-
-  onboardingNextButton->setEnabled(true);
-
-  // Resize window slightly if key area is shown
-  setFixedSize(440, source == "steam" ? 540 : 620);
 }
 
 // ---------------------------------------------------------------------------
@@ -633,39 +525,23 @@ void LoginWindow::showWelcomePage() {
 void LoginWindow::showQRPage() { stack->setCurrentWidget(qrPage); }
 void LoginWindow::showTokenPage() { stack->setCurrentWidget(tokenPage); }
 
-void LoginWindow::showOnboardingPage() {
-  // Reset state
-  selectedSource.clear();
-  keyInputArea->hide();
-  keyInputEdit->clear();
-  onboardingErrorLabel->hide();
-  onboardingNextButton->setEnabled(false);
-  for (QPushButton *card : {cardCSFloat, cardBuff, cardSteam})
-    card->setObjectName("sourceCard");
-  setStyleSheet(styleSheet());
-  setFixedSize(440, 540);
-
-  stack->setCurrentWidget(onboardingPage);
-}
-
 // ---------------------------------------------------------------------------
 // Login success → decide whether to onboard or go straight to app
 // ---------------------------------------------------------------------------
 
 void LoginWindow::handleLoginSuccess() {
-  // Show success feedback on the active page
   if (stack->currentWidget() == qrPage) {
     qrImageLabel->setText("\u2713");
     qrImageLabel->setStyleSheet(
         "border: 2px solid #38C878; background: #1c2e1e; "
         "color: #38C878; font-size: 48px;");
-    qrStatusLabel->setText("\u2713 Signed in! One more step...");
+    qrStatusLabel->setText("\u2713 Signed in! Launching CS2Vault...");
     qrStatusLabel->setStyleSheet(
         "color: #38C878; font-size: 11px; font-weight: bold;");
     qrProgressBar->setRange(0, 1);
     qrProgressBar->setValue(1);
   } else if (stack->currentWidget() == tokenPage) {
-    tokenStatusLabel->setText("\u2713 Signed in! One more step...");
+    tokenStatusLabel->setText("\u2713 Signed in! Launching CS2Vault...");
     tokenStatusLabel->setStyleSheet(
         "color: #38C878; font-size: 11px; font-weight: bold;");
     tokenProgressBar->setRange(0, 1);
@@ -673,14 +549,7 @@ void LoginWindow::handleLoginSuccess() {
   }
 
   QTimer::singleShot(800, this, [this]() {
-    QSettings settings("CS2Vault", "Settings");
-    if (settings.value("onboardingComplete", false).toBool()) {
-      // Returning user — go straight to the app
-      emit loginComplete();
-    } else {
-      // First time — show the onboarding wizard
-      showOnboardingPage();
-    }
+    emit loginComplete(); // always go straight to app, no onboarding
   });
 }
 
@@ -694,6 +563,9 @@ void LoginWindow::onStartLogin() {
   qrStatusLabel->setText("Connecting to Steam...");
   qrProgressBar->setRange(0, 0);
   companion->start();
+  QTimer::singleShot(1000, this, [this]() {
+    companion->sendCommand(QJsonObject{{"command", "start_login"}});
+  });
 }
 
 void LoginWindow::setStatus(const QString &text, const QString &color) {

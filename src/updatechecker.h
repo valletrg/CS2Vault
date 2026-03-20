@@ -12,7 +12,7 @@ public:
   explicit UpdateChecker(QObject *parent = nullptr);
   void check();
 
-  static QString currentVersion() { return "1.0.0"; }
+  static QString currentVersion() { return "1.2.1"; }
 
 signals:
   void updateAvailable(const QString &latestVersion, const QString &message);

@@ -10,5 +10,6 @@
         <file>fonts/DMSans-Bold.ttf</file>
         <file>fonts/JetBrainsMono-Regular.ttf</file>
         <file>fonts/ZenDots-Regular.ttf</file>
+        <file>icons/clipboard.svg</file>
     </qresource>
 </RCC>

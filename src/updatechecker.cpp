@@ -10,7 +10,7 @@ UpdateChecker::UpdateChecker(QObject *parent)
 
 void UpdateChecker::check() {
   QNetworkRequest request{QUrl("https://fursense.lol/version.json")};
-  request.setHeader(QNetworkRequest::UserAgentHeader, "CS2Vault/1.0.0");
+  request.setHeader(QNetworkRequest::UserAgentHeader, "CS2Vault/1.2.1");
   QNetworkReply *reply = nam->get(request);
 
   connect(reply, &QNetworkReply::finished, this, [this, reply]() {

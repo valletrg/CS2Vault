@@ -7,7 +7,6 @@ const path = require('path');
 const crypto = require('crypto');
 const os = require('os');
 const https = require('https');
-const ITEMS_CACHE_MAX_AGE_MS = 24 * 60 * 60 * 1000; // 24 hours
 
 if (process.pkg) {
     process.chdir(path.dirname(process.execPath));
@@ -27,6 +26,8 @@ const DB_DIR = process.pkg
     : __dirname;
 
 const REFRESH_TOKEN_FILE = path.join(DB_DIR, 'refresh_token.txt');
+const ITEMS_CACHE_FILE = path.join(DB_DIR, 'items-extended-cache.json');
+const ITEMS_CACHE_MAX_AGE_MS = 24 * 60 * 60 * 1000; // 24 hours
 
 // Derive a machine-specific key from hostname + username
 const MACHINE_KEY = crypto.createHash('sha256')
@@ -67,7 +68,7 @@ function fetchUrl(url, redirectCount = 0) {
         if (redirectCount > 5) return reject(new Error('Too many redirects'));
 
         const request = https.get(url, {
-            headers: { 'User-Agent': 'CS2Vault/1.0.0' },
+            headers: { 'User-Agent': 'CS2Vault/1.2.0' },
             timeout: 15000
         }, (res) => {
             if (res.statusCode >= 300 && res.statusCode < 400 && res.headers.location) {
@@ -89,51 +90,77 @@ function fetchUrl(url, redirectCount = 0) {
     });
 }
 
-function fetchItemDatabase() {
-    process.stderr.write('Fetching item database from fursense.lol...\n');
-    const startTime = Date.now();
-    return fetchUrl('https://fursense.lol/items-extended.json')
-        .then(({ status, body }) => {
-            process.stderr.write(`Fetch took ${Date.now() - startTime}ms, size: ${(body.length / 1024 / 1024).toFixed(2)}MB\n`);
-            if (status !== 200) {
-                throw new Error(`HTTP ${status}`);
-            }
+function parseItemDatabase(body) {
+    const parsed = JSON.parse(body);
+    const items = parsed.items || {};
 
-            const parsed = JSON.parse(body);
-            const items = parsed.items || {};
-
-            for (const [name, entry] of Object.entries(items)) {
-                if (entry.t === 'skin') {
-                    if (entry.wi && entry.pi) {
-                        const key = `${entry.wi}_${entry.pi}`;
-                        if (!skinsByKey[key]) {
-                            const parts = name.split(' | ');
-                            const weaponName = parts[0] || '';
-                            const patternWithCondition = parts[1] || '';
-                            const patternName = patternWithCondition.replace(/\s*\(.*\)$/, '');
-                            skinsByKey[key] = {
-                                market_hash_name: name,
-                                weapon: { name: weaponName },
-                                pattern: { name: patternName }
-                            };
-                        }
-                    }
-                } else {
-                    if (entry.di) {
-                        const key = String(entry.di);
-                        if (!defIndexDb[key]) {
-                            defIndexDb[key] = {
-                                market_hash_name: name,
-                                name: name,
-                                _type: entry.t
-                            };
-                        }
-                    }
+    for (const [name, entry] of Object.entries(items)) {
+        if (entry.t === 'skin') {
+            if (entry.wi && entry.pi) {
+                const key = `${entry.wi}_${entry.pi}`;
+                if (!skinsByKey[key]) {
+                    const parts = name.split(' | ');
+                    const weaponName = parts[0] || '';
+                    const patternWithCondition = parts[1] || '';
+                    const patternName = patternWithCondition.replace(/\s*\(.*\)$/, '');
+                    skinsByKey[key] = {
+                        market_hash_name: name,
+                        weapon: { name: weaponName },
+                        pattern: { name: patternName }
+                    };
                 }
             }
+        } else {
+            if (entry.di) {
+                const key = String(entry.di);
+                if (!defIndexDb[key]) {
+                    defIndexDb[key] = {
+                        market_hash_name: name,
+                        name: name,
+                        _type: entry.t
+                    };
+                }
+            }
+        }
+    }
 
-            dbReady = true;
-            process.stderr.write(`Item DB loaded: ${Object.keys(skinsByKey).length} skins, ${Object.keys(defIndexDb).length} other items\n`);
+    dbReady = true;
+    process.stderr.write(`Item DB ready: ${Object.keys(skinsByKey).length} skins, ${Object.keys(defIndexDb).length} other items\n`);
+}
+
+function isCacheValid(cacheFile, maxAgeMs) {
+    try {
+        const stats = fs.statSync(cacheFile);
+        return (Date.now() - stats.mtimeMs) < maxAgeMs;
+    } catch (e) {
+        return false;
+    }
+}
+
+function fetchItemDatabase() {
+    process.stderr.write('Loading item database...\n');
+
+    if (isCacheValid(ITEMS_CACHE_FILE, ITEMS_CACHE_MAX_AGE_MS)) {
+        process.stderr.write('Using cached item database.\n');
+        try {
+            const body = fs.readFileSync(ITEMS_CACHE_FILE, 'utf8');
+            parseItemDatabase(body);
+            return Promise.resolve();
+        } catch (e) {
+            process.stderr.write(`Cache read failed: ${e.message} — fetching fresh\n`);
+        }
+    }
+
+    process.stderr.write('Fetching fresh item database from fursense.lol...\n');
+    return fetchUrl('https://fursense.lol/items-extended.json')
+        .then(({ status, body }) => {
+            if (status !== 200) throw new Error(`HTTP ${status}`);
+            try {
+                fs.writeFileSync(ITEMS_CACHE_FILE, body);
+            } catch (e) {
+                process.stderr.write(`Cache write failed: ${e.message}\n`);
+            }
+            parseItemDatabase(body);
         });
 }
 
@@ -210,6 +237,7 @@ async function startLogin() {
         }
     }
 
+    // No saved token — start QR session
     send('status', { state: 'creating_session' });
     const session = new LoginSession(EAuthTokenPlatformType.SteamClient);
 
@@ -248,6 +276,14 @@ async function startLogin() {
 // ── Steam events ──────────────────────────────────────────────────────────────
 
 client.on('loggedOn', () => {
+    // Guard against anonymous login from expired/invalid token
+    if (client.steamID && client.steamID.type === 0) {
+        process.stderr.write('Anonymous login detected — token likely expired, deleting\n');
+        if (fs.existsSync(REFRESH_TOKEN_FILE)) fs.unlinkSync(REFRESH_TOKEN_FILE);
+        sendError('Saved login expired — please sign in again.');
+        process.exit(1);
+    }
+
     send('status', { state: 'logged_in', steamid: client.steamID.toString() });
     client.setPersona(SteamUser.EPersonaState.Online);
     client.gamesPlayed([730]);
@@ -265,6 +301,11 @@ client.on('loggedOn', () => {
 });
 
 client.on('refreshToken', (token) => {
+    // Don't save tokens from anonymous sessions
+    if (!client.steamID || client.steamID.type === 0) {
+        process.stderr.write('Skipping token save for anonymous session\n');
+        return;
+    }
     fs.writeFileSync(REFRESH_TOKEN_FILE, encryptToken(token));
 });
 
@@ -421,6 +462,13 @@ process.stdin.on('data', (chunk) => {
 
 function handleCommand(msg) {
     switch (msg.command) {
+        case 'start_login':
+            startLogin().catch(err => {
+                sendError('Failed to start login: ' + err.message);
+                process.exit(1);
+            });
+            break;
+
         case 'get_inventory':
             requestInventory();
             break;
@@ -472,11 +520,14 @@ function handleCommand(msg) {
             break;
 
         case 'login_with_web_token':
-            if (!msg.token) {
-                sendError('login_with_web_token requires token');
+            if (!msg.token || !msg.steamid) {
+                sendError('login_with_web_token requires token and steamid');
                 return;
             }
-            client.logOn({ refreshToken: msg.token });
+            client.logOn({
+                webLogonToken: msg.token,
+                steamID: msg.steamid
+            });
             break;
 
         case 'quit':
@@ -495,94 +546,11 @@ process.stdin.on('end', () => {
 });
 
 // ── Startup ───────────────────────────────────────────────────────────────────
-// Fetch item database first, then start Steam login.
-// If the DB fetch fails we continue anyway — item names fall back to
-// "Unknown (def:X)" which is acceptable offline or if fursense.lol is down.
+// Fetch item database only. Login is triggered by the Qt side via
+// 'start_login' or 'login_with_web_token' commands. No QR session
+// starts until the user explicitly chooses to log in.
 
 fetchItemDatabase()
-    .then(() => startLogin())
     .catch(err => {
         process.stderr.write(`Item DB fetch failed: ${err.message} — continuing without it\n`);
-        startLogin().catch(err2 => {
-            sendError('Failed to start login: ' + err2.message);
-            process.exit(1);
-        });
     });
-
-
-function isCacheValid(cacheFile, maxAgeMs) {
-    try {
-        const stats = fs.statSync(cacheFile);
-        return (Date.now() - stats.mtimeMs) < maxAgeMs;
-    } catch (e) {
-        return false;
-    }
-}
-
-function fetchItemDatabase() {
-    const ITEMS_CACHE_FILE = path.join(DB_DIR, 'items-extended-cache.json');
-    process.stderr.write('Loading item database...\n');
-
-    // Use cache if fresh enough
-    if (isCacheValid(ITEMS_CACHE_FILE, ITEMS_CACHE_MAX_AGE_MS)) {
-        process.stderr.write('Using cached item database.\n');
-        try {
-            const body = fs.readFileSync(ITEMS_CACHE_FILE, 'utf8');
-            parseItemDatabase(body);
-            return Promise.resolve();
-        } catch (e) {
-            process.stderr.write(`Cache read failed: ${e.message} — fetching fresh\n`);
-        }
-    }
-
-    process.stderr.write('Fetching fresh item database from fursense.lol...\n');
-    return fetchUrl('https://fursense.lol/items-extended.json')
-        .then(({ status, body }) => {
-            if (status !== 200) throw new Error(`HTTP ${status}`);
-            // Save to cache
-            try {
-                fs.writeFileSync(ITEMS_CACHE_FILE, body);
-            } catch (e) {
-                process.stderr.write(`Cache write failed: ${e.message}\n`);
-            }
-            parseItemDatabase(body);
-        });
-}
-
-function parseItemDatabase(body) {
-    const parsed = JSON.parse(body);
-    const items = parsed.items || {};
-
-    for (const [name, entry] of Object.entries(items)) {
-        if (entry.t === 'skin') {
-            if (entry.wi && entry.pi) {
-                const key = `${entry.wi}_${entry.pi}`;
-                if (!skinsByKey[key]) {
-                    const parts = name.split(' | ');
-                    const weaponName = parts[0] || '';
-                    const patternWithCondition = parts[1] || '';
-                    const patternName = patternWithCondition.replace(/\s*\(.*\)$/, '');
-                    skinsByKey[key] = {
-                        market_hash_name: name,
-                        weapon: { name: weaponName },
-                        pattern: { name: patternName }
-                    };
-                }
-            }
-        } else {
-            if (entry.di) {
-                const key = String(entry.di);
-                if (!defIndexDb[key]) {
-                    defIndexDb[key] = {
-                        market_hash_name: name,
-                        name: name,
-                        _type: entry.t
-                    };
-                }
-            }
-        }
-    }
-
-    dbReady = true;
-    process.stderr.write(`Item DB ready: ${Object.keys(skinsByKey).length} skins, ${Object.keys(defIndexDb).length} other items\n`);
-}
