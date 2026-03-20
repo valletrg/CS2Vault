@@ -32,33 +32,40 @@ SteamCompanion::SteamCompanion(QObject *parent)
   connect(process,
           QOverload<int, QProcess::ExitStatus>::of(&QProcess::finished), this,
           &SteamCompanion::onProcessFinished);
+
+  // Capture companion stderr for debugging
+  connect(process, &QProcess::readyReadStandardError, this, [this]() {
+    QString err = QString::fromUtf8(process->readAllStandardError());
+    qDebug() << "Companion stderr:" << err.trimmed();
+  });
 }
 
 SteamCompanion::~SteamCompanion() { stop(); }
 
 void SteamCompanion::start() {
-    if (process->state() != QProcess::NotRunning)
-        return;
+  if (process->state() != QProcess::NotRunning)
+    return;
 
-    gcReady_ = false;
-    process->setWorkingDirectory(companionDir());
+  gcReady_ = false;
+  process->setWorkingDirectory(companionDir());
 
 #ifdef Q_OS_WIN
-    QString standaloneExe = QCoreApplication::applicationDirPath() + "/steamcompanion.exe";
-    if (QFile::exists(standaloneExe)) {
-        process->setWorkingDirectory(QCoreApplication::applicationDirPath());
-        process->start(standaloneExe, QStringList());
-    } else {
-        emit errorOccurred("steamcompanion.exe not found at: " + standaloneExe);
-        return;
-    }
+  QString standaloneExe =
+      QCoreApplication::applicationDirPath() + "/steamcompanion.exe";
+  if (QFile::exists(standaloneExe)) {
+    process->setWorkingDirectory(QCoreApplication::applicationDirPath());
+    process->start(standaloneExe, QStringList());
+  } else {
+    emit errorOccurred("steamcompanion.exe not found at: " + standaloneExe);
+    return;
+  }
 #else
-    process->start("/usr/bin/node", QStringList() << "index.js");
+  process->start("/usr/bin/node", QStringList() << "index.js");
 #endif
 
-    if (!process->waitForStarted(5000)) {
-        emit errorOccurred("Failed to start Node.js companion process.");
-    }
+  if (!process->waitForStarted(5000)) {
+    emit errorOccurred("Failed to start Node.js companion process.");
+  }
 }
 
 void SteamCompanion::stop() {
@@ -199,12 +206,9 @@ void SteamCompanion::handleMessage(const QJsonObject &msg) {
       items.append(parseItem(v.toObject()));
     emit storageUnitReceived(casketId, items);
 
-} else if (type == "transfer_complete") {
-    emit transferComplete(
-        msg["action"].toString(),
-        msg["casket_id"].toString(),
-        msg["item_id"].toString()
-    );
+  } else if (type == "transfer_complete") {
+    emit transferComplete(msg["action"].toString(), msg["casket_id"].toString(),
+                          msg["item_id"].toString());
 
   } else if (type == "error") {
     emit errorOccurred(msg["message"].toString());
@@ -266,20 +270,16 @@ void SteamCompanion::onProcessFinished(int exitCode,
   }
 }
 
-void SteamCompanion::addToStorageUnit(const QString &casketId, const QString &itemId)
-{
-    sendCommand(QJsonObject{
-        {"command", "add_to_storage_unit"},
-        {"casket_id", casketId},
-        {"item_id", itemId}
-    });
+void SteamCompanion::addToStorageUnit(const QString &casketId,
+                                      const QString &itemId) {
+  sendCommand(QJsonObject{{"command", "add_to_storage_unit"},
+                          {"casket_id", casketId},
+                          {"item_id", itemId}});
 }
 
-void SteamCompanion::removeFromStorageUnit(const QString &casketId, const QString &itemId)
-{
-    sendCommand(QJsonObject{
-        {"command", "remove_from_storage_unit"},
-        {"casket_id", casketId},
-        {"item_id", itemId}
-    });
+void SteamCompanion::removeFromStorageUnit(const QString &casketId,
+                                           const QString &itemId) {
+  sendCommand(QJsonObject{{"command", "remove_from_storage_unit"},
+                          {"casket_id", casketId},
+                          {"item_id", itemId}});
 }
