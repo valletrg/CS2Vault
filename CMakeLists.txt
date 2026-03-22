@@ -30,10 +30,15 @@ set(SOURCES
     src/loginwindow.cpp
     src/updatechecker.cpp
     src/itemdatabase.cpp
+    src/accountmanager.cpp
+    src/dashboardwidget.cpp
+    src/watchlistwidget.cpp
+    src/watchlistmanager.cpp
 )
 
 set(HEADERS
     src/mainwindow.h
+    src/dashboardwidget.h
     src/portfoliowidget.h
     src/settingswidget.h
     src/priceempireapi.h
@@ -44,7 +49,10 @@ set(HEADERS
     src/qrlogindialog.h
     src/loginwindow.h
     src/updatechecker.h
+    src/accountmanager.h
     src/itemdatabase.h
+    src/watchlistwidget.h
+    src/watchlistmanager.h
 )
 
 set(RESOURCES

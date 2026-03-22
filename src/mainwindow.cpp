@@ -1,10 +1,14 @@
 #include "mainwindow.h"
+#include "dashboardwidget.h"
+#include "loginwindow.h"
 #include "portfoliomanager.h"
 #include "portfoliowidget.h"
 #include "priceempireapi.h"
 #include "settingswidget.h"
 #include "steamapi.h"
 #include "storageunitwidget.h"
+#include "watchlistmanager.h"
+#include "watchlistwidget.h"
 
 #include <QApplication>
 #include <QCloseEvent>
@@ -17,14 +21,18 @@
 #include <QPushButton>
 #include <QSettings>
 #include <QStackedWidget>
+#include <QStandardPaths>
 #include <QStatusBar>
 #include <QSvgRenderer>
 #include <QVBoxLayout>
 
-MainWindow::MainWindow(SteamCompanion *companion, QWidget *parent)
+MainWindow::MainWindow(SteamCompanion *companion, AccountManager *accountManager,
+                       QWidget *parent)
     : QMainWindow(parent), steamCompanion(companion),
+      accountManager(accountManager),
       api(new PriceEmpireAPI(this)), steamApi(new SteamAPI(this)),
       portfolioManager(new PortfolioManager(this)),
+      watchlistManager(new WatchlistManager(this)),
       priceUpdateTimer(new QTimer(this)) {
   steamCompanion->setParent(this);
   setupUI();
@@ -37,6 +45,8 @@ MainWindow::MainWindow(SteamCompanion *companion, QWidget *parent)
 
   connect(api, &PriceEmpireAPI::pricesLoaded, this, [this]() {
     statusBar()->showMessage("Prices loaded — ready.", 5000);
+    if (watchlistWidget)
+      watchlistWidget->updateAllPrices();
   });
   connect(api, &PriceEmpireAPI::pricesError, this, [this](const QString &err) {
     statusBar()->showMessage("Price fetch failed: " + err, 0);
@@ -100,8 +110,10 @@ void MainWindow::setupUI() {
     QString label;
   };
   QList<NavItem> items = {
+      {":/icons/dashboard.svg", "Dashboard"},
       {":/icons/storage.svg", "Storage Units"},
       {":/icons/portfolio.svg", "Portfolio"},
+      {":/icons/watchlist.svg", "Watchlist"},
       {":/icons/settings.svg", "Settings"},
   };
 
@@ -164,13 +176,18 @@ void MainWindow::setupUI() {
   stackedWidget = new QStackedWidget(central);
   stackedWidget->setObjectName("contentArea");
 
+  dashboardWidget = new DashboardWidget(steamCompanion, api, steamApi,
+                                        accountManager, this);
   storageUnitWidget = new StorageUnitWidget(steamCompanion, api, this);
   portfolioWidget = new PortfolioWidget(api, steamApi, portfolioManager,
                                         steamCompanion, this);
-  settingsWidget = new SettingsWidget(api, portfolioManager, this);
+  watchlistWidget = new WatchlistWidget(api, watchlistManager, this);
+  settingsWidget = new SettingsWidget(api, portfolioManager, accountManager, this);
 
+  stackedWidget->addWidget(dashboardWidget);
   stackedWidget->addWidget(storageUnitWidget);
   stackedWidget->addWidget(portfolioWidget);
+  stackedWidget->addWidget(watchlistWidget);
   stackedWidget->addWidget(settingsWidget);
 
   rootLayout->addWidget(sidebar);
@@ -210,6 +227,12 @@ void MainWindow::setupConnections() {
           &MainWindow::loadSettings);
   connect(portfolioWidget, &PortfolioWidget::portfolioUpdated, this,
           [this]() { statusBar()->showMessage("Portfolio updated", 3000); });
+  connect(settingsWidget, &SettingsWidget::switchAccountRequested, this,
+          &MainWindow::onSwitchAccountRequested);
+  connect(settingsWidget, &SettingsWidget::addAccountRequested, this,
+          &MainWindow::onAddAccountRequested);
+  connect(watchlistWidget, &WatchlistWidget::watchlistUpdated, this,
+          [this]() { statusBar()->showMessage("Watchlist updated", 3000); });
 }
 
 void MainWindow::setupSystemTray() {
@@ -284,4 +307,41 @@ void MainWindow::closeEvent(QCloseEvent *event) {
   } else {
     event->accept();
   }
+}
+
+void MainWindow::onSwitchAccountRequested(const QString &id) {
+  if (!accountManager || id == accountManager->activeAccountId())
+    return;
+
+  accountManager->setActiveAccount(id);
+
+  QString profileDir =
+      QStandardPaths::writableLocation(QStandardPaths::AppDataLocation) +
+      "/accounts/" + id;
+
+  steamCompanion->stop();
+  steamCompanion->start(profileDir);
+
+  statusBar()->showMessage("Switching account...", 0);
+}
+
+void MainWindow::onAddAccountRequested() {
+  auto *loginWin = new LoginWindow();
+  loginWin->setAttribute(Qt::WA_DeleteOnClose);
+
+  connect(loginWin, &LoginWindow::loginComplete, this,
+          [this, loginWin]() {
+            // The new companion is discarded here; its Node.js process saved a
+            // token in the default profile directory. A future step should call
+            // AccountManager::addAccount() with the steamId and token once the
+            // companion exposes them, then restart with the new profile path.
+            loginWin->takeCompanion()->deleteLater();
+            loginWin->close();
+            QMessageBox::information(
+                this, "Account Added",
+                "Login successful. Restart CS2Vault to switch to the new "
+                "account, or use Switch in Settings if it appears in the list.");
+          });
+
+  loginWin->show();
 }

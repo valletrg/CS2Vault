@@ -252,107 +252,148 @@ void PortfolioWidget::setupUI() {
 
   mainLayout->addWidget(steamGroup);
 
-  // Chart toggle
-  toggleChartButton =
-      new QPushButton(QString::fromUtf8("\xe2\x96\xb6  Show Chart"), this);
-  toggleChartButton->setCheckable(true);
-  toggleChartButton->setChecked(false);
-  toggleChartButton->setFixedHeight(26);
-  toggleChartButton->setStyleSheet(
-      "QPushButton { text-align: left; padding-left: 8px; background: "
-      "#1e2130;"
-      "              border: 1px solid #373a48; border-radius: 5px; color: "
-      "#bbb; font-size: 11px; }"
-      "QPushButton:checked { background: #252840; color: #e0e0e0; }"
-      "QPushButton:hover   { background: #252840; }");
-  mainLayout->addWidget(toggleChartButton);
-
-  // Chart container (collapsed by default)
+  // ── Chart section ────────────────────────────────────────────────────────
   chartContainer = new QWidget(this);
-  chartContainer->hide();
   QVBoxLayout *chartContainerLayout = new QVBoxLayout(chartContainer);
-  chartContainerLayout->setContentsMargins(0, 0, 0, 0);
+  chartContainerLayout->setContentsMargins(0, 4, 0, 0);
+  chartContainerLayout->setSpacing(6);
 
+  // Time range selector bar
+  QHBoxLayout *timeRangeLayout = new QHBoxLayout();
+  timeRangeLayout->setSpacing(2);
+  timeRangeLayout->setContentsMargins(0, 0, 0, 0);
+  QStringList ranges = {"24H", "7D", "1M", "3M", "6M", "1Y", "All"};
+  for (const QString &r : ranges) {
+    auto *btn = new QPushButton(r, chartContainer);
+    btn->setCheckable(true);
+    btn->setFixedHeight(26);
+    btn->setMinimumWidth(36);
+    btn->setSizePolicy(QSizePolicy::Minimum, QSizePolicy::Fixed);
+    btn->setCursor(Qt::PointingHandCursor);
+    btn->setStyleSheet(
+        "QPushButton { background: transparent; border: none; border-radius: "
+        "12px;"
+        "              color: #8b8fa3; font-size: 11px; font-weight: bold; }"
+        "QPushButton:checked { background: #2a2d3a; color: #e0e0e0; }"
+        "QPushButton:hover:!checked { color: #c0c4d8; }");
+    if (r == selectedTimeRange)
+      btn->setChecked(true);
+    connect(btn, &QPushButton::clicked, this, [this, r]() {
+      onTimeRangeChanged(r);
+    });
+    timeRangeLayout->addWidget(btn);
+    timeRangeButtons.append(btn);
+  }
+  timeRangeLayout->addStretch();
+  chartContainerLayout->addLayout(timeRangeLayout);
+
+  // Performance stats row
+  QHBoxLayout *perfLayout = new QHBoxLayout();
+  perfLayout->setSpacing(16);
+  perfLayout->setContentsMargins(0, 0, 0, 0);
+  auto makePerfLabel = [&](const QString &period) -> QLabel * {
+    auto *lbl = new QLabel(period + " —", chartContainer);
+    lbl->setStyleSheet("color: #8b8fa3; font-size: 11px;");
+    perfLayout->addWidget(lbl);
+    return lbl;
+  };
+  perf24hLabel = makePerfLabel("24H");
+  perf7dLabel = makePerfLabel("7D");
+  perf30dLabel = makePerfLabel("30D");
+  perf90dLabel = makePerfLabel("90D");
+  perfLayout->addStretch();
+  chartContainerLayout->addLayout(perfLayout);
+
+  // Chart
   portfolioChart = new QChart();
-  portfolioChart->setTitle("Portfolio Value Over Time");
-  portfolioChart->setTitleFont(QFont("Segoe UI", 11, QFont::Bold));
-  portfolioChart->setTitleBrush(QBrush(QColor(220, 220, 220)));
-  portfolioChart->setAnimationOptions(QChart::SeriesAnimations);
-  portfolioChart->setAnimationDuration(600);
-  portfolioChart->legend()->setAlignment(Qt::AlignBottom);
-  portfolioChart->legend()->setFont(QFont("Segoe UI", 9));
-  portfolioChart->legend()->setLabelColor(QColor(200, 200, 200));
-  portfolioChart->setBackgroundBrush(QBrush(QColor(28, 30, 38)));
-  portfolioChart->setBackgroundPen(QPen(QColor(55, 58, 72), 1));
-  portfolioChart->setPlotAreaBackgroundBrush(QBrush(QColor(22, 24, 30)));
+  portfolioChart->setTitle("");
+  portfolioChart->setAnimationOptions(QChart::NoAnimation);
+  portfolioChart->legend()->hide();
+  portfolioChart->setBackgroundBrush(QBrush(QColor(0x0f, 0x11, 0x17)));
+  portfolioChart->setBackgroundPen(Qt::NoPen);
+  portfolioChart->setPlotAreaBackgroundBrush(QBrush(QColor(0x0f, 0x11, 0x17)));
   portfolioChart->setPlotAreaBackgroundVisible(true);
+  portfolioChart->setMargins(QMargins(0, 8, 0, 0));
 
+  // Value series — cyan
   valueSeries = new QLineSeries();
-  valueSeries->setName("Total Value");
-  QPen valuePen(QColor(56, 200, 120));
+  QPen valuePen(QColor(0x4f, 0xc3, 0xf7));
   valuePen.setWidth(2);
   valueSeries->setPen(valuePen);
 
+  // Cost series — red dashed
   costSeries = new QLineSeries();
-  costSeries->setName("Total Cost (Buy-In)");
-  QPen costPen(QColor(90, 155, 230));
+  QPen costPen(QColor(0xdc, 0x46, 0x46));
   costPen.setWidth(2);
+  costPen.setStyle(Qt::DashLine);
   costSeries->setPen(costPen);
 
   portfolioChart->addSeries(valueSeries);
   portfolioChart->addSeries(costSeries);
 
+  // X axis (bottom)
   axisX = new QDateTimeAxis();
   axisX->setTickCount(6);
   axisX->setFormat("MMM d");
-  axisX->setTitleText("Date");
-  axisX->setTitleFont(QFont("Segoe UI", 9));
-  axisX->setTitleBrush(QBrush(QColor(160, 160, 170)));
+  axisX->setTitleText("");
   axisX->setLabelsFont(QFont("Segoe UI", 8));
-  axisX->setLabelsColor(QColor(160, 160, 170));
-  axisX->setLinePen(QPen(QColor(60, 63, 80)));
-  axisX->setGridLineColor(QColor(45, 48, 62));
+  axisX->setLabelsColor(QColor(0x64, 0x6e, 0x87));
+  axisX->setLinePen(QPen(QColor(0x1e, 0x22, 0x33)));
+  axisX->setGridLineVisible(false);
   axisX->setShadesVisible(false);
   portfolioChart->addAxis(axisX, Qt::AlignBottom);
   valueSeries->attachAxis(axisX);
   costSeries->attachAxis(axisX);
 
+  // Y axis (RIGHT side)
   axisY = new QValueAxis();
   axisY->setLabelFormat("$%.0f");
-  axisY->setTitleText("Value (USD)");
-  axisY->setTitleFont(QFont("Segoe UI", 9));
-  axisY->setTitleBrush(QBrush(QColor(160, 160, 170)));
+  axisY->setTitleText("");
   axisY->setLabelsFont(QFont("Segoe UI", 8));
-  axisY->setLabelsColor(QColor(160, 160, 170));
-  axisY->setLinePen(QPen(QColor(60, 63, 80)));
-  axisY->setGridLineColor(QColor(45, 48, 62));
-  axisY->setMinorGridLineColor(QColor(35, 38, 50));
-  axisY->setMinorGridLineVisible(true);
-  axisY->setMinorTickCount(3);
+  axisY->setLabelsColor(QColor(0x64, 0x6e, 0x87));
+  axisY->setLinePen(QPen(QColor(0x1e, 0x22, 0x33)));
+  axisY->setGridLineColor(QColor(0x1e, 0x22, 0x33));
+  axisY->setMinorGridLineVisible(false);
   axisY->setShadesVisible(false);
-  portfolioChart->addAxis(axisY, Qt::AlignLeft);
+  portfolioChart->addAxis(axisY, Qt::AlignRight);
   valueSeries->attachAxis(axisY);
   costSeries->attachAxis(axisY);
 
   chartView = new QChartView(portfolioChart);
   chartView->setRenderHint(QPainter::Antialiasing);
   chartView->setMinimumHeight(300);
-  chartView->setStyleSheet("background: transparent;");
+  chartView->setStyleSheet("background: #0f1117; border: none;");
+
+  // Badge labels (value + cost) overlaid on chart
+  valueBadge = new QLabel(chartView);
+  valueBadge->setStyleSheet(
+      "background: #4fc3f7; color: #0f1117; font-size: 10px; font-weight: "
+      "bold;"
+      " padding: 2px 6px; border-radius: 3px;");
+  valueBadge->setFixedHeight(18);
+  valueBadge->hide();
+
+  costBadge = new QLabel(chartView);
+  costBadge->setStyleSheet(
+      "background: #dc4646; color: #fff; font-size: 10px; font-weight: bold;"
+      " padding: 2px 6px; border-radius: 3px;");
+  costBadge->setFixedHeight(18);
+  costBadge->hide();
+
+  // Placeholder for insufficient data
+  chartPlaceholder = new QLabel("Not enough data to display chart.\nAt least 2 "
+                                "history points are required.",
+                                chartContainer);
+  chartPlaceholder->setAlignment(Qt::AlignCenter);
+  chartPlaceholder->setStyleSheet(
+      "color: #555; font-size: 12px; padding: 40px;");
+  chartPlaceholder->hide();
+
   chartContainerLayout->addWidget(chartView);
+  chartContainerLayout->addWidget(chartPlaceholder);
   mainLayout->addWidget(chartContainer);
 
-  connect(toggleChartButton, &QPushButton::toggled, this, [this](bool checked) {
-    if (!chartContainer)
-      return;
-    if (checked) {
-      chartContainer->show();
-      toggleChartButton->setText(QString::fromUtf8("\xe2\x96\xbc  Hide Chart"));
-      updateChart();
-    } else {
-      chartContainer->hide();
-      toggleChartButton->setText(QString::fromUtf8("\xe2\x96\xb6  Show Chart"));
-    }
-  });
+  updateChart();
 
   // Price-check progress bar (hidden until active)
   queueGroup = new QWidget(this);
@@ -611,36 +652,131 @@ void PortfolioWidget::calculateStatistics() {
           .arg(roi >= 0 ? "#28c878" : "#dc4646"));
 }
 
+void PortfolioWidget::onTimeRangeChanged(const QString &range) {
+  selectedTimeRange = range;
+  for (auto *btn : timeRangeButtons)
+    btn->setChecked(btn->text() == range);
+  updateChart();
+}
+
 void PortfolioWidget::updateChart() {
   valueSeries->clear();
   costSeries->clear();
+  valueBadge->hide();
+  costBadge->hide();
 
   Portfolio portfolio = portfolioManager->getPortfolio(currentPortfolioId);
-  if (portfolio.history.isEmpty())
+
+  // Filter history by selected time range
+  qint64 now = QDateTime::currentMSecsSinceEpoch();
+  qint64 cutoff = 0;
+  if (selectedTimeRange == "24H")
+    cutoff = now - qint64(24) * 3600 * 1000;
+  else if (selectedTimeRange == "7D")
+    cutoff = now - qint64(7) * 24 * 3600 * 1000;
+  else if (selectedTimeRange == "1M")
+    cutoff = now - qint64(30) * 24 * 3600 * 1000;
+  else if (selectedTimeRange == "3M")
+    cutoff = now - qint64(90) * 24 * 3600 * 1000;
+  else if (selectedTimeRange == "6M")
+    cutoff = now - qint64(180) * 24 * 3600 * 1000;
+  else if (selectedTimeRange == "1Y")
+    cutoff = now - qint64(365) * 24 * 3600 * 1000;
+
+  QList<PortfolioHistoryPoint> filtered;
+  for (const auto &pt : portfolio.history) {
+    if (pt.timestamp >= cutoff)
+      filtered.append(pt);
+  }
+
+  // Placeholder if < 2 points
+  if (filtered.size() < 2) {
+    chartView->hide();
+    chartPlaceholder->show();
     return;
+  }
+  chartPlaceholder->hide();
+  chartView->show();
 
   double minV = std::numeric_limits<double>::max();
   double maxV = std::numeric_limits<double>::lowest();
 
-  for (const PortfolioHistoryPoint &pt : portfolio.history) {
+  for (const auto &pt : filtered) {
     valueSeries->append(pt.timestamp, pt.totalValue);
     costSeries->append(pt.timestamp, pt.totalCost);
     minV = std::min(minV, std::min(pt.totalValue, pt.totalCost));
     maxV = std::max(maxV, std::max(pt.totalValue, pt.totalCost));
   }
 
-  if (!portfolio.history.isEmpty()) {
-    axisX->setRange(
-        QDateTime::fromMSecsSinceEpoch(portfolio.history.first().timestamp),
-        QDateTime::fromMSecsSinceEpoch(portfolio.history.last().timestamp));
-  }
+  axisX->setRange(
+      QDateTime::fromMSecsSinceEpoch(filtered.first().timestamp),
+      QDateTime::fromMSecsSinceEpoch(filtered.last().timestamp));
 
   double padding = (maxV - minV) * 0.1;
+  if (padding < 1.0)
+    padding = 1.0;
   axisY->setRange(std::max(0.0, minV - padding), maxV + padding);
 
-  QPen vPen(maxV >= 0 ? QColor(56, 200, 120) : QColor(220, 70, 70));
+  // Update value series color — green if profit, red if loss
+  double lastValue = filtered.last().totalValue;
+  double lastCost = filtered.last().totalCost;
+  bool profitable = lastValue >= lastCost;
+  QPen vPen(profitable ? QColor(0x38, 0xc8, 0x78) : QColor(0xdc, 0x46, 0x46));
   vPen.setWidth(2);
   valueSeries->setPen(vPen);
+
+  // Badge labels
+  valueBadge->setText(QString("Value $%1").arg(lastValue, 0, 'f', 0));
+  valueBadge->adjustSize();
+  valueBadge->setStyleSheet(
+      QString("background: %1; color: %2; font-size: 10px; font-weight: bold;"
+              " padding: 2px 6px; border-radius: 3px;")
+          .arg(profitable ? "#38c878" : "#dc4646",
+               profitable ? "#0f1117" : "#fff"));
+  valueBadge->show();
+
+  costBadge->setText(QString("Cost $%1").arg(lastCost, 0, 'f', 0));
+  costBadge->adjustSize();
+  costBadge->show();
+
+  // Position badges at right edge of chart view
+  int badgeX = chartView->width() - valueBadge->width() - 12;
+  valueBadge->move(std::max(4, badgeX), 20);
+  costBadge->move(std::max(4, badgeX), 42);
+
+  // Update performance stats
+  auto calcPerf = [&](qint64 periodMs) -> QString {
+    qint64 periodCutoff = now - periodMs;
+    // Find earliest point in range
+    double startVal = -1;
+    for (const auto &pt : portfolio.history) {
+      if (pt.timestamp >= periodCutoff) {
+        startVal = pt.totalValue;
+        break;
+      }
+    }
+    if (startVal <= 0)
+      return "—";
+    double pct = ((lastValue - startVal) / startVal) * 100.0;
+    return QString("%1%2%")
+        .arg(pct >= 0 ? "+" : "")
+        .arg(pct, 0, 'f', 1);
+  };
+
+  auto setPerfStyle = [](QLabel *lbl, const QString &period,
+                         const QString &val) {
+    bool positive = val.startsWith('+');
+    bool negative = val.startsWith('-');
+    QString color = positive ? "#38c878" : (negative ? "#dc4646" : "#8b8fa3");
+    lbl->setText(QString("<span style='color:#8b8fa3;'>%1 </span>"
+                         "<span style='color:%2;'>%3</span>")
+                     .arg(period, color, val));
+  };
+
+  setPerfStyle(perf24hLabel, "24H", calcPerf(qint64(24) * 3600 * 1000));
+  setPerfStyle(perf7dLabel, "7D", calcPerf(qint64(7) * 24 * 3600 * 1000));
+  setPerfStyle(perf30dLabel, "30D", calcPerf(qint64(30) * 24 * 3600 * 1000));
+  setPerfStyle(perf90dLabel, "90D", calcPerf(qint64(90) * 24 * 3600 * 1000));
 }
 
 // ---------------------------------------------------------------------------

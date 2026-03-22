@@ -2,6 +2,9 @@
 
 #include <QApplication>
 #include <QClipboard>
+#include <QDir>
+#include <QStandardPaths>
+#include <QUuid>
 #include <QCoreApplication>
 #include <QDesktopServices>
 #include <QFile>
@@ -141,7 +144,16 @@ LoginWindow::LoginWindow(QWidget *parent)
   });
 
   connect(companion, &SteamCompanion::loggedIn, this,
-          [this](const QString &) { handleLoginSuccess(); });
+          [this](const QString &steamId) {
+            // After a fresh QR login, register the account using the
+            // pre-created profile directory (token already saved there by Node).
+            if (accountManager && !pendingAccountId.isEmpty() &&
+                stack->currentWidget() == qrPage) {
+              accountManager->registerAccount(steamId, "", "", pendingAccountId);
+              pendingAccountId.clear();
+            }
+            handleLoginSuccess();
+          });
 
   connect(companion, &SteamCompanion::statusMessage, this,
           [this](const QString &msg) {
@@ -156,6 +168,12 @@ LoginWindow::LoginWindow(QWidget *parent)
             // Ignore errors after we've already logged in successfully
             if (stack->currentWidget() == welcomePage)
               return;
+
+            // Saved token failed (expired / revoked) — go back to welcome
+            if (stack->currentWidget() == loadingPage) {
+              showWelcomePage();
+              return;
+            }
 
             if (stack->currentWidget() == qrPage) {
               qrStatusLabel->setText("Error: " + err);
@@ -186,13 +204,25 @@ SteamCompanion *LoginWindow::takeCompanion() {
   return c;
 }
 
-void LoginWindow::tryAutoLogin() {
+void LoginWindow::tryAutoLogin(const QString &profilePath) {
+  if (!profilePath.isEmpty() &&
+      QFile::exists(profilePath + "/refresh_token.txt")) {
+    showLoadingPage();
+    companion->start(profilePath);
+    QTimer::singleShot(1000, this, [this]() {
+      companion->sendCommand(QJsonObject{{"command", "start_login"}});
+    });
+    return;
+  }
+
+  // Fall back to legacy single-account path
   QStringList paths = {QCoreApplication::applicationDirPath() +
                            "/steamcompanion/refresh_token.txt",
                        QCoreApplication::applicationDirPath() +
                            "/../../steamcompanion/refresh_token.txt"};
   for (const QString &p : paths) {
     if (QFile::exists(p)) {
+      showLoadingPage();
       companion->start();
       QTimer::singleShot(1000, this, [this]() {
         companion->sendCommand(QJsonObject{{"command", "start_login"}});
@@ -219,10 +249,12 @@ void LoginWindow::setupUI() {
   setupWelcomePage();
   setupQRPage();
   setupTokenPage();
+  setupLoadingPage();
 
   stack->addWidget(welcomePage);
   stack->addWidget(qrPage);
   stack->addWidget(tokenPage);
+  stack->addWidget(loadingPage);
 
   showWelcomePage();
 }
@@ -497,11 +529,60 @@ void LoginWindow::setupTokenPage() {
           &LoginWindow::showWelcomePage);
 }
 
+void LoginWindow::setupLoadingPage() {
+  loadingPage = new QWidget();
+  QVBoxLayout *layout = new QVBoxLayout(loadingPage);
+  layout->setContentsMargins(40, 40, 40, 40);
+  layout->setSpacing(16);
+  layout->setAlignment(Qt::AlignCenter);
+
+  QLabel *logo = new QLabel("CS2Vault", loadingPage);
+  QFont titleFont;
+  titleFont.setPointSize(24);
+  titleFont.setBold(true);
+  logo->setFont(titleFont);
+  logo->setAlignment(Qt::AlignCenter);
+  logo->setStyleSheet("color: #1b88d4;");
+  layout->addWidget(logo);
+
+  loadingStatusLabel = new QLabel("Signing you in...", loadingPage);
+  loadingStatusLabel->setAlignment(Qt::AlignCenter);
+  loadingStatusLabel->setStyleSheet("color: #aaa; font-size: 13px;");
+  layout->addWidget(loadingStatusLabel);
+
+  loadingProgressBar = new QProgressBar(loadingPage);
+  loadingProgressBar->setRange(0, 0); // indeterminate
+  loadingProgressBar->setTextVisible(false);
+  loadingProgressBar->setFixedHeight(4);
+  layout->addWidget(loadingProgressBar);
+
+  layout->addSpacing(12);
+
+  auto *cancelBtn =
+      new QPushButton("← Sign in with a different account", loadingPage);
+  cancelBtn->setObjectName("back");
+  layout->addWidget(cancelBtn, 0, Qt::AlignCenter);
+
+  layout->addStretch();
+
+  connect(cancelBtn, &QPushButton::clicked, this, [this]() {
+    companion->stop();
+    pendingAccountId.clear();
+    showWelcomePage();
+  });
+}
+
 // ---------------------------------------------------------------------------
 // Page transitions
 // ---------------------------------------------------------------------------
 
 void LoginWindow::showWelcomePage() {
+  // Stop any in-progress companion session and discard the pending account id.
+  if (companion->isRunning())
+    companion->stop();
+  pendingAccountId.clear();
+  qrLoginButton->setEnabled(true);
+
   qrImageLabel->clear();
   qrImageLabel->setText("Loading QR code...");
   qrImageLabel->setStyleSheet(
@@ -526,6 +607,13 @@ void LoginWindow::showWelcomePage() {
 void LoginWindow::showQRPage() { stack->setCurrentWidget(qrPage); }
 void LoginWindow::showTokenPage() { stack->setCurrentWidget(tokenPage); }
 
+void LoginWindow::showLoadingPage(const QString &message) {
+  loadingStatusLabel->setText(message);
+  loadingProgressBar->setRange(0, 0);
+  loadingStatusLabel->setStyleSheet("color: #aaa; font-size: 13px;");
+  stack->setCurrentWidget(loadingPage);
+}
+
 // ---------------------------------------------------------------------------
 // Login success → decide whether to onboard or go straight to app
 // ---------------------------------------------------------------------------
@@ -547,11 +635,15 @@ void LoginWindow::handleLoginSuccess() {
         "color: #38C878; font-size: 11px; font-weight: bold;");
     tokenProgressBar->setRange(0, 1);
     tokenProgressBar->setValue(1);
+  } else if (stack->currentWidget() == loadingPage) {
+    loadingStatusLabel->setText("\u2713 Signed in! Launching CS2Vault...");
+    loadingStatusLabel->setStyleSheet(
+        "color: #38C878; font-size: 13px; font-weight: bold;");
+    loadingProgressBar->setRange(0, 1);
+    loadingProgressBar->setValue(1);
   }
 
-  QTimer::singleShot(800, this, [this]() {
-    emit loginComplete(); // always go straight to app, no onboarding
-  });
+  QTimer::singleShot(800, this, [this]() { emit loginComplete(); });
 }
 
 // ---------------------------------------------------------------------------
@@ -563,7 +655,21 @@ void LoginWindow::onStartLogin() {
   showQRPage();
   qrStatusLabel->setText("Connecting to Steam...");
   qrProgressBar->setRange(0, 0);
-  companion->start();
+
+  if (accountManager) {
+    // Pre-create the account directory so Node.js saves the token in the
+    // right place from the start. We register the account metadata once
+    // loggedIn fires with the actual steamId.
+    pendingAccountId = QUuid::createUuid().toString(QUuid::Id128).left(8);
+    QString profileDir =
+        QStandardPaths::writableLocation(QStandardPaths::AppDataLocation) +
+        "/accounts/" + pendingAccountId;
+    QDir().mkpath(profileDir);
+    companion->start(profileDir);
+  } else {
+    companion->start();
+  }
+
   QTimer::singleShot(1000, this, [this]() {
     companion->sendCommand(QJsonObject{{"command", "start_login"}});
   });

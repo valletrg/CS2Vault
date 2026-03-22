@@ -25,7 +25,13 @@ const DB_DIR = process.pkg
     ? path.dirname(process.execPath)
     : __dirname;
 
-const REFRESH_TOKEN_FILE = path.join(DB_DIR, 'refresh_token.txt');
+const args = process.argv.slice(2);
+const profileArgIdx = args.indexOf('--profile');
+const PROFILE_DIR = (profileArgIdx >= 0 && args[profileArgIdx + 1])
+    ? args[profileArgIdx + 1]
+    : DB_DIR;
+
+const REFRESH_TOKEN_FILE = path.join(PROFILE_DIR, 'refresh_token.txt');
 const ITEMS_CACHE_FILE = path.join(DB_DIR, 'items-extended-cache.json');
 const ITEMS_CACHE_MAX_AGE_MS = 24 * 60 * 60 * 1000; // 24 hours
 

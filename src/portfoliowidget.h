@@ -133,11 +133,28 @@ private:
   QChart *portfolioChart = nullptr;
   QChartView *chartView = nullptr;
   QWidget *chartContainer = nullptr;
-  QPushButton *toggleChartButton = nullptr;
   QLineSeries *valueSeries = nullptr;
   QLineSeries *costSeries = nullptr;
   QDateTimeAxis *axisX = nullptr;
   QValueAxis *axisY = nullptr;
+
+  // Time range selector
+  QList<QPushButton *> timeRangeButtons;
+  QString selectedTimeRange = "All";
+  void onTimeRangeChanged(const QString &range);
+
+  // Performance stats
+  QLabel *perf24hLabel = nullptr;
+  QLabel *perf7dLabel = nullptr;
+  QLabel *perf30dLabel = nullptr;
+  QLabel *perf90dLabel = nullptr;
+
+  // Badge labels (pinned to chart right edge)
+  QLabel *valueBadge = nullptr;
+  QLabel *costBadge = nullptr;
+
+  // Chart placeholder
+  QLabel *chartPlaceholder = nullptr;
 
   // Steam throttled queue (used when source == Steam)
   QQueue<PriceCheckJob> priceCheckQueue;

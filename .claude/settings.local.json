@@ -1,0 +1,11 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(grep -E \"\\\\.\\(h|cpp\\)$\")",
+      "Bash(ls -la /home/val/CLionProjects/untitled/src/*.h)",
+      "Bash(mkdir -p build)",
+      "Bash(cmake .. -DCMAKE_BUILD_TYPE=Release)",
+      "Bash(grep -E \"\\\\.h$|\\\\.cpp$\")"
+    ]
+  }
+}

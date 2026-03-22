@@ -42,29 +42,36 @@ SteamCompanion::SteamCompanion(QObject *parent)
 
 SteamCompanion::~SteamCompanion() { stop(); }
 
-void SteamCompanion::start() {
+void SteamCompanion::start(const QString &profilePath) {
   if (process->state() != QProcess::NotRunning)
     return;
 
   gcReady_ = false;
-  process->setWorkingDirectory(companionDir());
 
 #ifdef Q_OS_WIN
   QString standaloneExe =
       QCoreApplication::applicationDirPath() + "/steamcompanion.exe";
   if (QFile::exists(standaloneExe)) {
     process->setWorkingDirectory(QCoreApplication::applicationDirPath());
-    process->start(standaloneExe, QStringList());
+    QStringList args;
+    if (!profilePath.isEmpty())
+      args << "--profile" << profilePath;
+    process->start(standaloneExe, args);
   } else {
     emit errorOccurred("steamcompanion.exe not found at: " + standaloneExe);
     return;
   }
 #else
-  process->start("/usr/bin/node", QStringList() << "index.js");
+  process->setWorkingDirectory(companionDir());
+  QStringList args;
+  args << "index.js";
+  if (!profilePath.isEmpty())
+    args << "--profile" << profilePath;
+  process->start("/usr/bin/node", args);
 #endif
 
   if (!process->waitForStarted(5000)) {
-    emit errorOccurred("Failed to start Node.js companion process.");
+    emit errorOccurred("Failed to start companion process.");
   }
 }
 

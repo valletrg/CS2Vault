@@ -1,8 +1,8 @@
 #ifndef SETTINGSWIDGET_H
 #define SETTINGSWIDGET_H
 
+#include "accountmanager.h"
 #include "priceempireapi.h"
-
 #include <QCheckBox>
 #include <QComboBox>
 #include <QLabel>
@@ -18,6 +18,7 @@ class SettingsWidget : public QWidget {
 public:
   explicit SettingsWidget(PriceEmpireAPI *api,
                           PortfolioManager *portfolioManager,
+                          AccountManager *accountManager,
                           QWidget *parent = nullptr);
   ~SettingsWidget();
 
@@ -25,12 +26,18 @@ public:
 
 signals:
   void settingsChanged();
+  void addAccountRequested();
+  void switchAccountRequested(const QString &id);
 
 private slots:
   void onSaveSettings();
   void onTestAPI();
   void onExportAll();
   void onOpenDataFolder();
+  void onAddAccount();
+  void onRemoveAccount(const QString &id);
+  void onSwitchAccount(const QString &id);
+  void refreshAccountsList();
 
 private:
   void setupUI();
@@ -39,6 +46,7 @@ private:
 
   PriceEmpireAPI *api;
   PortfolioManager *portfolioManager;
+  AccountManager *accountManager = nullptr;
 
   QLabel *apiStatusLabel;
   QLabel *priceLastUpdatedLabel;
@@ -48,6 +56,8 @@ private:
   QSpinBox *updateIntervalSpinBox;
   QComboBox *currencyComboBox;
   QComboBox *sourceComboBox = nullptr;
+
+  QWidget *accountsListWidget = nullptr;
 
   QPushButton *saveButton;
 };

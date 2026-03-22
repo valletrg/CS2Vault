@@ -2,6 +2,7 @@
 <RCC version="1.0">
     <qresource>
         <file>style.qss</file>
+        <file>icons/dashboard.svg</file>
         <file>icons/storage.svg</file>
         <file>icons/portfolio.svg</file>
         <file>icons/settings.svg</file>
@@ -11,5 +12,6 @@
         <file>fonts/JetBrainsMono-Regular.ttf</file>
         <file>fonts/ZenDots-Regular.ttf</file>
         <file>icons/clipboard.svg</file>
+        <file>icons/watchlist.svg</file>
     </qresource>
 </RCC>

@@ -1,6 +1,7 @@
 #ifndef LOGINWINDOW_H
 #define LOGINWINDOW_H
 
+#include "accountmanager.h"
 #include "steamcompanion.h"
 #include <QLabel>
 #include <QLineEdit>
@@ -18,7 +19,8 @@ public:
   ~LoginWindow();
 
   SteamCompanion *takeCompanion();
-  void tryAutoLogin();
+  void tryAutoLogin(const QString &profilePath = QString());
+  void setAccountManager(AccountManager *am) { accountManager = am; }
 
 signals:
   void loginComplete();
@@ -31,10 +33,12 @@ private:
   void setupWelcomePage();
   void setupQRPage();
   void setupTokenPage();
+  void setupLoadingPage();
 
   void showWelcomePage();
   void showQRPage();
   void showTokenPage();
+  void showLoadingPage(const QString &message = "Signing you in...");
 
   void setStatus(const QString &text, const QString &color = "gray");
   void handleLoginSuccess();
@@ -42,6 +46,13 @@ private:
   SteamCompanion *companion;
   QNetworkAccessManager *nam;
   QStackedWidget *stack;
+  AccountManager *accountManager = nullptr;
+  QString pendingAccountId; // pre-generated id for an in-progress QR login
+
+  // ── Loading page ──────────────────────────
+  QWidget *loadingPage = nullptr;
+  QLabel *loadingStatusLabel = nullptr;
+  QProgressBar *loadingProgressBar = nullptr;
 
   // ── Welcome page ──────────────────────────
   QWidget *welcomePage = nullptr;

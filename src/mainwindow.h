@@ -1,6 +1,7 @@
 #ifndef MAINWINDOW_H
 #define MAINWINDOW_H
 
+#include "accountmanager.h"
 #include "itemdatabase.h"
 #include "steamcompanion.h"
 #include "updatechecker.h"
@@ -14,18 +15,22 @@
 
 class QPushButton;
 class QLabel;
+class DashboardWidget;
 class StorageUnitWidget;
 class PortfolioWidget;
 class SettingsWidget;
+class WatchlistWidget;
 class PriceEmpireAPI;
 class SteamAPI;
 class PortfolioManager;
+class WatchlistManager;
 
 class MainWindow : public QMainWindow {
   Q_OBJECT
 
 public:
-  explicit MainWindow(SteamCompanion *companion, QWidget *parent = nullptr);
+  explicit MainWindow(SteamCompanion *companion, AccountManager *accountManager,
+                      QWidget *parent = nullptr);
   ~MainWindow() override;
 
 private slots:
@@ -33,6 +38,8 @@ private slots:
   void showNotification(const QString &title, const QString &message);
   void onAboutClicked();
   void switchToPage(int index);
+  void onSwitchAccountRequested(const QString &id);
+  void onAddAccountRequested();
 
 private:
   void setupUI();
@@ -46,13 +53,17 @@ private:
   QWidget *sidebar = nullptr;
   QList<QPushButton *> navButtons;
 
+  DashboardWidget *dashboardWidget = nullptr;
   StorageUnitWidget *storageUnitWidget = nullptr;
   PortfolioWidget *portfolioWidget = nullptr;
   SettingsWidget *settingsWidget = nullptr;
+  WatchlistWidget *watchlistWidget = nullptr;
 
+  AccountManager *accountManager = nullptr;
   PriceEmpireAPI *api = nullptr;
   SteamAPI *steamApi = nullptr;
   PortfolioManager *portfolioManager = nullptr;
+  WatchlistManager *watchlistManager = nullptr;
   ItemDatabase *itemDb = nullptr;
 
   QTimer *priceUpdateTimer = nullptr;
