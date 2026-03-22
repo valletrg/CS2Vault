@@ -5,3 +5,4 @@ steamcompanion/refresh_token.txt
 *.user
 .idea/
 cmake-build-*/
+.claude/
