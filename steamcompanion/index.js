@@ -17,9 +17,20 @@ if (process.pkg) {
 process.stderr.write(`Working directory: ${process.cwd()}\n`);
 
 const SteamCommunity = require('steamcommunity');
+const TradeOfferManager = require('steam-tradeoffer-manager');
 const community = new SteamCommunity();
 const client = new SteamUser();
 const csgo = new GlobalOffensive(client);
+
+let lastCookies = [];
+
+const manager = new TradeOfferManager({
+    steam: client,
+    community: community,
+    language: 'en',
+    useAccessToken: true,
+    pollInterval: 30000
+});
 
 const DB_DIR = process.pkg
     ? path.dirname(process.execPath)
@@ -32,6 +43,7 @@ const PROFILE_DIR = (profileArgIdx >= 0 && args[profileArgIdx + 1])
     : DB_DIR;
 
 const REFRESH_TOKEN_FILE = path.join(PROFILE_DIR, 'refresh_token.txt');
+const FLOAT_CACHE_FILE = path.join(PROFILE_DIR, 'float_cache.json');
 const ITEMS_CACHE_FILE = path.join(DB_DIR, 'items-extended-cache.json');
 const ITEMS_CACHE_MAX_AGE_MS = 24 * 60 * 60 * 1000; // 24 hours
 
@@ -69,16 +81,16 @@ let skinsByKey = {};
 let defIndexDb = {};
 let dbReady = false;
 
-function fetchUrl(url, redirectCount = 0) {
+function fetchUrl(url, redirectCount = 0, extraHeaders = {}) {
     return new Promise((resolve, reject) => {
         if (redirectCount > 5) return reject(new Error('Too many redirects'));
 
         const request = https.get(url, {
-            headers: { 'User-Agent': 'CS2Vault/1.2.0' },
+            headers: { 'User-Agent': 'CS2Vault/1.2.0', ...extraHeaders },
             timeout: 15000
         }, (res) => {
             if (res.statusCode >= 300 && res.statusCode < 400 && res.headers.location) {
-                return fetchUrl(res.headers.location, redirectCount + 1)
+                return fetchUrl(res.headers.location, redirectCount + 1, extraHeaders)
                     .then(resolve).catch(reject);
             }
             let data = '';
@@ -225,6 +237,141 @@ function resolveMarketHashName(defIndex, paintIndex, paintWear) {
     return null;
 }
 
+// ── Float cache ───────────────────────────────────────────────────────────────
+
+let floatCache = {};
+
+function loadFloatCache() {
+    try {
+        if (fs.existsSync(FLOAT_CACHE_FILE))
+            floatCache = JSON.parse(fs.readFileSync(FLOAT_CACHE_FILE, 'utf8'));
+    } catch (e) {
+        process.stderr.write(`Float cache load failed: ${e.message}\n`);
+        floatCache = {};
+    }
+}
+
+function saveFloatCacheEntry(assetId, data) {
+    floatCache[assetId] = data;
+    try {
+        fs.writeFileSync(FLOAT_CACHE_FILE, JSON.stringify(floatCache));
+    } catch (e) {
+        process.stderr.write(`Float cache save failed: ${e.message}\n`);
+    }
+}
+
+// ── Inspect link construction ─────────────────────────────────────────────────
+
+function constructInspectLink(item, steamid64) {
+    const link = item.actions?.[0]?.link;
+    if (!link) return null;
+    return link
+        .replace('%owner_steamid%', steamid64)
+        .replace('%assetid%', item.assetid);
+}
+
+// ── Float fetching ────────────────────────────────────────────────────────────
+
+function fetchFloatForItem(inspectLink) {
+    const encoded = encodeURIComponent(inspectLink);
+    return fetchUrl(`https://inspect.pricempire.com/?url=${encoded}`, 0, {
+        'User-Agent': 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 Chrome/120.0.0.0 Safari/537.36'
+    })
+        .then(({ status, body }) => {
+            if (status !== 200) {
+                process.stderr.write(`[float] Pricempire failed: HTTP ${status} — body: ${body.slice(0, 200)}\n`);
+                throw new Error(`Pricempire HTTP ${status}`);
+            }
+            const data = JSON.parse(body);
+            if (!data.iteminfo) throw new Error('No iteminfo in Pricempire response');
+            return {
+                float_value: data.iteminfo.floatvalue,
+                paint_seed: data.iteminfo.paintseed,
+                paint_index: data.iteminfo.paintindex
+            };
+        })
+        .catch(err => {
+            process.stderr.write(`[float] Falling back to Valve for link: ${inspectLink.slice(0, 120)} — reason: ${err.message}\n`);
+            return fetchUrl(`https://steamcommunity.com/economy/floatid?url=${encoded}`)
+                .then(({ status, body }) => {
+                    if (status !== 200) throw new Error(`Valve floatid HTTP ${status}`);
+                    const data = JSON.parse(body);
+                    if (!data.iteminfo) throw new Error('No iteminfo in Valve response');
+                    return {
+                        float_value: data.iteminfo.floatvalue,
+                        paint_seed: data.iteminfo.paintseed,
+                        paint_index: data.iteminfo.paintindex
+                    };
+                });
+        });
+}
+
+function processFloatQueue(items) {
+    if (items.length === 0) return;
+    const [item, ...rest] = items;
+
+    if (items.length === rest.length + 1) {
+        // Log first item in each queue run so we can verify link format
+        process.stderr.write(`[float] Processing queue — first link: ${item.inspect_link}\n`);
+    }
+
+    fetchFloatForItem(item.inspect_link)
+        .then(result => {
+            saveFloatCacheEntry(item.id, result);
+            send('floats', {
+                items: [{
+                    id: item.id,
+                    float_value: result.float_value,
+                    paint_seed: result.paint_seed,
+                    paint_index: result.paint_index
+                }]
+            });
+        })
+        .catch(err => {
+            process.stderr.write(`[float] Fetch failed for ${item.id}: ${err.message}\n`);
+        })
+        .finally(() => {
+            setTimeout(() => processFloatQueue(rest), 250);
+        });
+}
+
+function requestFloats(items) {
+    process.stderr.write('[float] Float fetching disabled pending Valve inspect API fix\n');
+    return;
+
+    const withLink = items.filter(item => item.inspect_link);
+    const withoutLink = items.length - withLink.length;
+
+    // Pre-filter: skip items with no csgo_econ_action_preview in their link
+    // (cases, keys, stickers, etc. that can never have floats)
+    const floatable = withLink.filter(item =>
+        item.inspect_link.includes('csgo_econ_action_preview')
+    );
+    const skippedNoFloat = withLink.length - floatable.length;
+
+    // Post-construction filter: skip links that still have unresolved placeholders
+    // (%20 and other percent-encoded characters are valid and must not be treated as malformed)
+    const validLinks = [];
+    let skippedMalformed = 0;
+    for (const item of floatable) {
+        const link = item.inspect_link;
+        const unresolved = link.includes('%owner_steamid%') ||
+                           link.includes('%assetid%') ||
+                           link.includes('%propid:');
+        if (unresolved) {
+            skippedMalformed++;
+        } else {
+            validLinks.push(item);
+        }
+    }
+
+    const uncached = validLinks.filter(item => !floatCache[item.id]);
+    const cached = validLinks.length - uncached.length;
+
+    if (uncached.length === 0) return;
+    processFloatQueue(uncached);
+}
+
 // ── Login ─────────────────────────────────────────────────────────────────────
 
 async function startLogin() {
@@ -295,8 +442,15 @@ client.on('loggedOn', () => {
     client.gamesPlayed([730]);
 
     client.on('webSession', (sessionId, cookies) => {
+        lastCookies = cookies;
         community.setCookies(cookies);
+        manager.setCookies(cookies);
         send('status', { state: 'web_session_ready' });
+    });
+
+    community.on('sessionExpired', () => {
+        process.stderr.write('[session] Session expired, refreshing...\n');
+        client.webLogOn();
     });
 
     setTimeout(() => {
@@ -400,7 +554,8 @@ function requestInventory() {
                 rarity: item.tags?.find(t => t.category === 'Rarity')?.localized_tag_name || '',
                 tradable: item.tradable,
                 marketable: item.marketable,
-                icon_url: item.icon_url
+                icon_url: item.icon_url,
+                inspect_link: constructInspectLink(item, client.steamID.toString())
             })),
             containers: allContainers
         });
@@ -444,6 +599,37 @@ function requestStorageUnit(casketId) {
         });
     });
 }
+
+// ── Trade offer helpers ───────────────────────────────────────────────────────
+
+function serializeOffer(offer) {
+    return {
+        id: offer.id,
+        partner: offer.partner.toString(),
+        message: offer.message || '',
+        is_our_offer: offer.isOurOffer,
+        items_to_give: (offer.itemsToGive || []).map(item => ({
+            assetid: item.assetid,
+            market_hash_name: item.market_hash_name,
+            appid: item.appid
+        })),
+        items_to_receive: (offer.itemsToReceive || []).map(item => ({
+            assetid: item.assetid,
+            market_hash_name: item.market_hash_name,
+            appid: item.appid
+        })),
+        time_created: offer.created ? Math.floor(offer.created.getTime() / 1000) : 0,
+        state: offer.state
+    };
+}
+
+manager.on('newOffer', (offer) => {
+    send('new_trade_offer', { offer: serializeOffer(offer) });
+});
+
+manager.on('sentOfferChanged', (offer, oldState) => {
+    send('trade_offer_changed', { offer_id: offer.id, new_state: offer.state });
+});
 
 // ── Stdin command handler ─────────────────────────────────────────────────────
 
@@ -525,6 +711,14 @@ function handleCommand(msg) {
             });
             break;
 
+        case 'get_floats':
+            if (!msg.items || !Array.isArray(msg.items)) {
+                sendError('get_floats requires items array');
+                return;
+            }
+            requestFloats(msg.items);
+            break;
+
         case 'login_with_web_token':
             if (!msg.token || !msg.steamid) {
                 sendError('login_with_web_token requires token and steamid');
@@ -533,6 +727,207 @@ function handleCommand(msg) {
             client.logOn({
                 webLogonToken: msg.token,
                 steamID: msg.steamid
+            });
+            break;
+
+        case 'get_trade_offers':
+            manager.getOffers(TradeOfferManager.EOfferFilter.ActiveOnly, (err, sent, received) => {
+                if (err) {
+                    sendError('Trade offers error: ' + err.message);
+                    return;
+                }
+                const offers = [...(sent || []), ...(received || [])].map(serializeOffer);
+                send('trade_offers', { offers });
+            });
+            break;
+
+        case 'accept_trade_offer':
+            if (!msg.offer_id) {
+                sendError('accept_trade_offer requires offer_id');
+                return;
+            }
+            {
+                const attemptAccept = (isRetry = false) => {
+                    manager.getOffer(msg.offer_id, (err, offer) => {
+                        if (err) {
+                            send('trade_offer_accepted', {
+                                offer_id: msg.offer_id,
+                                status: 'error',
+                                error: err.message
+                            });
+                            return;
+                        }
+                        offer.accept(false, (err, status) => {
+                            if (err) {
+                                if (!isRetry && err.message === 'Not Logged In') {
+                                    process.stderr.write('[trade] not logged in, waiting for session refresh\n');
+                                    const retryTimeout = setTimeout(() => {
+                                        client.removeAllListeners('webSession');
+                                        send('trade_offer_accepted', {
+                                            offer_id: msg.offer_id,
+                                            status: 'error',
+                                            error: 'Session refresh timed out'
+                                        });
+                                    }, 15000);
+                                    client.once('webSession', (sessionId, cookies) => {
+                                        clearTimeout(retryTimeout);
+                                        community.setCookies(cookies);
+                                        manager.setCookies(cookies);
+                                        process.stderr.write('[trade] session refreshed, retrying accept\n');
+                                        attemptAccept(true);
+                                    });
+                                    return;
+                                }
+                                const errLower = err.message.toLowerCase();
+                                if (errLower.includes('family view') || errLower.includes('parental')) {
+                                    process.stderr.write('[trade] Family View detected, requesting PIN\n');
+                                    send('trade_offer_accepted', {
+                                        offer_id: msg.offer_id,
+                                        status: 'family_view',
+                                        error: 'Family View PIN required'
+                                    });
+                                    return;
+                                }
+                                send('trade_offer_accepted', {
+                                    offer_id: msg.offer_id,
+                                    status: 'error',
+                                    error: err.message
+                                });
+                                return;
+                            }
+                            const normalized = status === 'escrow' ? 'escrow'
+                                             : status === 'pending' ? 'pending'
+                                             : 'accepted';
+                            send('trade_offer_accepted', {
+                                offer_id: msg.offer_id,
+                                status: normalized
+                            });
+                        });
+                    });
+                };
+                attemptAccept();
+            }
+            break;
+
+        case 'cancel_trade_offer':
+            if (!msg.offer_id) {
+                sendError('cancel_trade_offer requires offer_id');
+                return;
+            }
+            {
+                const attemptCancel = (isRetry = false) => {
+                    manager.getOffer(msg.offer_id, (err, offer) => {
+                        if (err) {
+                            send('trade_offer_cancelled', {
+                                offer_id: msg.offer_id,
+                                status: 'error',
+                                error: err.message
+                            });
+                            return;
+                        }
+                        offer.cancel((err) => {
+                            if (err) {
+                                if (!isRetry && err.message === 'Not Logged In') {
+                                    process.stderr.write('[trade] not logged in, waiting for session refresh\n');
+                                    const retryTimeout = setTimeout(() => {
+                                        client.removeAllListeners('webSession');
+                                        send('trade_offer_cancelled', {
+                                            offer_id: msg.offer_id,
+                                            status: 'error',
+                                            error: 'Session refresh timed out'
+                                        });
+                                    }, 15000);
+                                    client.once('webSession', (sessionId, cookies) => {
+                                        clearTimeout(retryTimeout);
+                                        community.setCookies(cookies);
+                                        manager.setCookies(cookies);
+                                        process.stderr.write('[trade] session refreshed, retrying cancel\n');
+                                        attemptCancel(true);
+                                    });
+                                    return;
+                                }
+                                send('trade_offer_cancelled', {
+                                    offer_id: msg.offer_id,
+                                    status: 'error',
+                                    error: err.message
+                                });
+                                return;
+                            }
+                            send('trade_offer_cancelled', {
+                                offer_id: msg.offer_id,
+                                status: 'cancelled'
+                            });
+                        });
+                    });
+                };
+                attemptCancel();
+            }
+            break;
+
+        case 'send_trade_offer':
+            if (!msg.trade_url) {
+                sendError('send_trade_offer requires trade_url');
+                return;
+            }
+            {
+                const attemptSend = (isRetry = false) => {
+                    const offer = manager.createOffer(msg.trade_url);
+                    if (msg.message) offer.setMessage(msg.message);
+                    for (const assetid of (msg.items_to_give || [])) {
+                        offer.addMyItem({ appid: 730, contextid: '2', assetid });
+                    }
+                    for (const assetid of (msg.items_to_receive || [])) {
+                        offer.addTheirItem({ appid: 730, contextid: '2', assetid });
+                    }
+                    offer.send((err, status) => {
+                        if (err) {
+                            if (!isRetry && err.message === 'Not Logged In') {
+                                process.stderr.write('[trade] not logged in, waiting for session refresh\n');
+                                const retryTimeout = setTimeout(() => {
+                                    client.removeAllListeners('webSession');
+                                    send('trade_offer_sent', {
+                                        offer_id: '',
+                                        status: 'error',
+                                        error: 'Session refresh timed out'
+                                    });
+                                }, 15000);
+                                client.once('webSession', (sessionId, cookies) => {
+                                    clearTimeout(retryTimeout);
+                                    community.setCookies(cookies);
+                                    manager.setCookies(cookies);
+                                    process.stderr.write('[trade] session refreshed, retrying send\n');
+                                    attemptSend(true);
+                                });
+                                return;
+                            }
+                            send('trade_offer_sent', {
+                                offer_id: '',
+                                status: 'error',
+                                error: err.message
+                            });
+                            return;
+                        }
+                        send('trade_offer_sent', {
+                            offer_id: offer.id,
+                            status: 'sent'
+                        });
+                    });
+                };
+                attemptSend();
+            }
+            break;
+
+        case 'parental_unlock':
+            if (!msg.pin) {
+                sendError('parental_unlock requires pin');
+                return;
+            }
+            community.parentalUnlock(msg.pin, (err) => {
+                if (err) {
+                    send('parental_unlock', { success: false, error: err.message });
+                    return;
+                }
+                send('parental_unlock', { success: true });
             });
             break;
 
@@ -555,6 +950,8 @@ process.stdin.on('end', () => {
 // Fetch item database only. Login is triggered by the Qt side via
 // 'start_login' or 'login_with_web_token' commands. No QR session
 // starts until the user explicitly chooses to log in.
+
+loadFloatCache();
 
 fetchItemDatabase()
     .catch(err => {

@@ -6,3 +6,4 @@ steamcompanion/refresh_token.txt
 .idea/
 cmake-build-*/
 .claude/
+research.md

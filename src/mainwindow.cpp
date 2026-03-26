@@ -8,6 +8,9 @@
 #include "steamapi.h"
 #include "storageunitwidget.h"
 #include "watchlistmanager.h"
+#include "tradehistory.h"
+#include "tradehistorywidget.h"
+#include "tradeswidget.h"
 #include "watchlistwidget.h"
 
 #include <QApplication>
@@ -21,6 +24,10 @@
 #include <QPushButton>
 #include <QSettings>
 #include <QStackedWidget>
+#include <QFile>
+#include <QJsonArray>
+#include <QJsonDocument>
+#include <QJsonObject>
 #include <QStandardPaths>
 #include <QStatusBar>
 #include <QSvgRenderer>
@@ -33,6 +40,8 @@ MainWindow::MainWindow(SteamCompanion *companion, AccountManager *accountManager
       api(new PriceEmpireAPI(this)), steamApi(new SteamAPI(this)),
       portfolioManager(new PortfolioManager(this)),
       watchlistManager(new WatchlistManager(this)),
+      tradeHistoryManager(new TradeHistoryManager(this)),
+      itemDb(new ItemDatabase(this)),
       priceUpdateTimer(new QTimer(this)) {
   steamCompanion->setParent(this);
   setupUI();
@@ -53,16 +62,19 @@ MainWindow::MainWindow(SteamCompanion *companion, AccountManager *accountManager
   });
 
   QSettings settings("CS2Vault", "Settings");
-  QString savedSource = settings.value("priceSource", "Skinport").toString();
+  QString savedSource = settings.value("priceSource", "white.market (fast)  (~10 min)").toString();
   static const QMap<QString, QString> urls = {
-      {"Skinport", "https://fursense.lol/prices.json"},
-      {"white.market", "https://fursense.lol/prices-whitemarket.json"},
-      {"market.csgo.com", "https://fursense.lol/prices-marketcsgo.json"}};
+      {"white.market  (~1 hour)",
+       "https://s3.white.market/export/v1/prices/730.json"},
+      {"white.market (fast)  (~10 min)",
+       "https://s3.white.market/export/v1/prices/730.10min.json"},
+      {"Loot.Farm  (~1 min)", "https://loot.farm/fullprice.json"},
+      {"Buff163  (8-24 hours)",
+       "https://prices.csgotrader.app/latest/buff163.json"}};
   api->initSourceUrl(
-      urls.value(savedSource, "https://fursense.lol/prices.json"));
+      urls.value(savedSource, "https://s3.white.market/export/v1/prices/730.10min.json"));
   api->loadPrices();
 
-  itemDb = new ItemDatabase(this);
   connect(itemDb, &ItemDatabase::loaded, this, [this]() {
     statusBar()->showMessage(
         QString("Item database loaded — %1 items.").arg(itemDb->itemCount()),
@@ -113,6 +125,8 @@ void MainWindow::setupUI() {
       {":/icons/dashboard.svg", "Dashboard"},
       {":/icons/storage.svg", "Storage Units"},
       {":/icons/portfolio.svg", "Portfolio"},
+      {":/icons/trades.svg", "Trades"},
+      {":/icons/history.svg", "History"},
       {":/icons/watchlist.svg", "Watchlist"},
       {":/icons/settings.svg", "Settings"},
   };
@@ -178,15 +192,23 @@ void MainWindow::setupUI() {
 
   dashboardWidget = new DashboardWidget(steamCompanion, api, steamApi,
                                         accountManager, this);
-  storageUnitWidget = new StorageUnitWidget(steamCompanion, api, this);
+  storageUnitWidget =
+      new StorageUnitWidget(steamCompanion, api, tradeHistoryManager, this);
   portfolioWidget = new PortfolioWidget(api, steamApi, portfolioManager,
-                                        steamCompanion, this);
+                                        steamCompanion, itemDb,
+                                        tradeHistoryManager, this);
+  tradesWidget = new TradesWidget(steamCompanion, api, tradeHistoryManager,
+                                   itemDb, this);
+  tradeHistoryWidget =
+      new TradeHistoryWidget(tradeHistoryManager, itemDb, this);
   watchlistWidget = new WatchlistWidget(api, watchlistManager, this);
   settingsWidget = new SettingsWidget(api, portfolioManager, accountManager, this);
 
   stackedWidget->addWidget(dashboardWidget);
   stackedWidget->addWidget(storageUnitWidget);
   stackedWidget->addWidget(portfolioWidget);
+  stackedWidget->addWidget(tradesWidget);
+  stackedWidget->addWidget(tradeHistoryWidget);
   stackedWidget->addWidget(watchlistWidget);
   stackedWidget->addWidget(settingsWidget);
 
@@ -233,6 +255,48 @@ void MainWindow::setupConnections() {
           &MainWindow::onAddAccountRequested);
   connect(watchlistWidget, &WatchlistWidget::watchlistUpdated, this,
           [this]() { statusBar()->showMessage("Watchlist updated", 3000); });
+  connect(tradeHistoryWidget, &TradeHistoryWidget::historyUpdated, this,
+          [this]() { statusBar()->showMessage("Trade history updated", 3000); });
+
+  // Trade offers
+  connect(steamCompanion, &SteamCompanion::tradeOffersReceived, tradesWidget,
+          &TradesWidget::onTradeOffersReceived);
+  connect(steamCompanion, &SteamCompanion::newTradeOffer, tradesWidget,
+          &TradesWidget::onNewTradeOffer);
+  connect(steamCompanion, &SteamCompanion::tradeOfferAccepted,
+          tradesWidget, &TradesWidget::onTradeOfferAccepted);
+  connect(steamCompanion, &SteamCompanion::tradeOfferCancelled, tradesWidget,
+          &TradesWidget::onTradeOfferCancelled);
+  connect(steamCompanion, &SteamCompanion::tradeOfferChanged, tradesWidget,
+          &TradesWidget::onTradeOfferChanged);
+
+  // Trade offer consent navigation
+  connect(tradesWidget, &TradesWidget::navigateToSettings, this,
+          [this]() { switchToPage(6); });
+  connect(settingsWidget, &SettingsWidget::tradesConsentReset, tradesWidget,
+          &TradesWidget::resetConsent);
+
+  // Part 4: Notification for new incoming trade offers
+  connect(steamCompanion, &SteamCompanion::newTradeOffer, this,
+          [this](const TradeOfferData &offer) {
+            if (!offer.isOurOffer && trayIcon && trayIcon->isVisible() &&
+                !isActiveWindow()) {
+              int itemCount = offer.itemsToReceive.size();
+              QString body =
+                  QString("Incoming offer from %1 — %2 item%3")
+                      .arg(offer.partnerSteamId)
+                      .arg(itemCount)
+                      .arg(itemCount == 1 ? "" : "s");
+              trayIcon->showMessage("New Trade Offer", body,
+                                    QSystemTrayIcon::Information, 5000);
+            }
+          });
+
+  // Inventory change detection
+  connect(steamCompanion, &SteamCompanion::inventoryReceived, this,
+          &MainWindow::onInventoryReceived);
+  connect(steamCompanion, &SteamCompanion::storageUnitReceived, this,
+          &MainWindow::onStorageUnitReceived);
 }
 
 void MainWindow::setupSystemTray() {
@@ -241,6 +305,19 @@ void MainWindow::setupSystemTray() {
 
   trayIcon = new QSystemTrayIcon(this);
   trayIcon->setToolTip("CS2Vault");
+
+  // Set tray icon from an existing SVG resource
+  QSvgRenderer trayRenderer(QString(":/icons/portfolio.svg"));
+  if (trayRenderer.isValid()) {
+    QPixmap trayPx(64, 64);
+    trayPx.fill(Qt::transparent);
+    QPainter trayPainter(&trayPx);
+    trayRenderer.render(&trayPainter);
+    trayPainter.setCompositionMode(QPainter::CompositionMode_SourceIn);
+    trayPainter.fillRect(trayPx.rect(), QColor("#4fc3f7"));
+    trayPainter.end();
+    trayIcon->setIcon(QIcon(trayPx));
+  }
 
   trayMenu = new QMenu(this);
   trayMenu->addAction("Show", this, &QWidget::showNormal);
@@ -344,4 +421,102 @@ void MainWindow::onAddAccountRequested() {
           });
 
   loginWin->show();
+}
+
+// ---------------------------------------------------------------------------
+// Inventory snapshot change detection
+// ---------------------------------------------------------------------------
+
+void MainWindow::onStorageUnitReceived(const QString & /*casketId*/,
+                                       const QList<GCItem> &items) {
+  // Track all assetids that live in storage units so we don't flag them
+  // as "traded_away" when they're absent from the main inventory.
+  for (const GCItem &item : items) {
+    if (!item.id.isEmpty())
+      m_knownStorageAssetIds.insert(item.id);
+  }
+}
+
+void MainWindow::onInventoryReceived(const QList<GCItem> &items,
+                                     const QList<GCContainer> & /*containers*/) {
+  // Never act on an empty inventory — likely a fetch error.
+  if (items.isEmpty())
+    return;
+
+  QString dataPath =
+      QStandardPaths::writableLocation(QStandardPaths::AppDataLocation);
+  QString snapshotPath = dataPath + "/inventory_snapshot.json";
+
+  // Build current inventory map: assetid → market_hash_name
+  QMap<QString, QString> currentMap;
+  for (const GCItem &item : items) {
+    if (item.id.isEmpty())
+      continue;
+    QString name =
+        item.marketHashName.isEmpty() ? item.name : item.marketHashName;
+    currentMap[item.id] = name;
+  }
+
+  // Load previous snapshot
+  QMap<QString, QString> previousMap;
+  bool hadSnapshot = false;
+
+  QFile snapshotFile(snapshotPath);
+  if (snapshotFile.exists() && snapshotFile.open(QIODevice::ReadOnly)) {
+    QJsonDocument doc = QJsonDocument::fromJson(snapshotFile.readAll());
+    snapshotFile.close();
+    if (doc.isArray()) {
+      hadSnapshot = true;
+      for (const QJsonValue &v : doc.array()) {
+        QJsonObject obj = v.toObject();
+        QString assetid = obj["assetid"].toString();
+        QString name = obj["name"].toString();
+        if (!assetid.isEmpty())
+          previousMap[assetid] = name;
+      }
+    }
+  }
+
+  // Save new snapshot
+  QJsonArray arr;
+  for (auto it = currentMap.constBegin(); it != currentMap.constEnd(); ++it) {
+    QJsonObject obj;
+    obj["assetid"] = it.key();
+    obj["name"] = it.value();
+    arr.append(obj);
+  }
+  if (snapshotFile.open(QIODevice::WriteOnly)) {
+    snapshotFile.write(QJsonDocument(arr).toJson(QJsonDocument::Compact));
+    snapshotFile.close();
+  }
+
+  // On first fetch, just save and return silently.
+  if (!hadSnapshot)
+    return;
+
+  qint64 now = QDateTime::currentMSecsSinceEpoch();
+
+  // Detect acquired items (in current but not in previous)
+  for (auto it = currentMap.constBegin(); it != currentMap.constEnd(); ++it) {
+    if (!previousMap.contains(it.key())) {
+      TradeHistoryEntry entry;
+      entry.itemName = it.value();
+      entry.type = "acquired";
+      entry.timestamp = now;
+      tradeHistoryManager->addEntry(entry);
+    }
+  }
+
+  // Detect traded away items (in previous but not in current)
+  // Exclude items that are in storage units.
+  for (auto it = previousMap.constBegin(); it != previousMap.constEnd(); ++it) {
+    if (!currentMap.contains(it.key()) &&
+        !m_knownStorageAssetIds.contains(it.key())) {
+      TradeHistoryEntry entry;
+      entry.itemName = it.value();
+      entry.type = "traded_away";
+      entry.timestamp = now;
+      tradeHistoryManager->addEntry(entry);
+    }
+  }
 }

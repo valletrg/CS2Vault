@@ -1,9 +1,11 @@
 #ifndef PORTFOLIOWIDGET_H
 #define PORTFOLIOWIDGET_H
 
+#include "itemdatabase.h"
 #include "portfoliomanager.h"
 #include "steamapi.h"
 #include "steamcompanion.h"
+#include "tradehistory.h"
 #include <QComboBox>
 #include <QLabel>
 #include <QLineEdit>
@@ -37,6 +39,8 @@ public:
   explicit PortfolioWidget(PriceEmpireAPI *api, SteamAPI *steamApi,
                            PortfolioManager *portfolioManager,
                            SteamCompanion *steamCompanion,
+                           ItemDatabase *itemDb,
+                           TradeHistoryManager *tradeHistoryManager = nullptr,
                            QWidget *parent = nullptr);
   ~PortfolioWidget();
   void updateAllPrices();
@@ -67,6 +71,7 @@ private slots:
                              const QList<GCContainer> &containers);
   void onGCStorageUnitReceived(const QString &casketId,
                                const QList<GCItem> &items);
+  void onFloatsReceived(const QMap<QString, GCItem> &updates);
 
 private:
   void setupUI();
@@ -83,6 +88,8 @@ private:
   PriceEmpireAPI *api = nullptr;
   SteamAPI *steamApi = nullptr;
   PortfolioManager *portfolioManager = nullptr;
+  ItemDatabase *itemDb = nullptr;
+  TradeHistoryManager *tradeHistoryManager = nullptr;
 
   QComboBox *portfolioComboBox = nullptr;
   QPushButton *createPortfolioButton = nullptr;
@@ -119,6 +126,9 @@ private:
 
   QPushButton *gcShowImportDialogButton = nullptr;
   QList<GCItem> lastFetchedItems;
+
+  // assetid → market_hash_name, built on each inventory receive
+  QMap<QString, QString> m_assetidToMarketName;
 
   // Steam companion / GC
   SteamCompanion *steamCompanion = nullptr;

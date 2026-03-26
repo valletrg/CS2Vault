@@ -52,7 +52,7 @@ public:
     QVector<Portfolio> getAllPortfolios() const;
     Portfolio getPortfolio(const QString &id) const;
     bool portfolioExists(const QString &id) const;
-    void recordHistoryPoint(const QString &id);
+    void recordHistoryPoint(const QString &id, bool forced = false);
 
     void addItem(const QString &portfolioId, const PortfolioItem &item);
     bool removeItem(const QString &portfolioId, int index);

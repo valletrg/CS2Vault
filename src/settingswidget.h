@@ -28,6 +28,7 @@ signals:
   void settingsChanged();
   void addAccountRequested();
   void switchAccountRequested(const QString &id);
+  void tradesConsentReset();
 
 private slots:
   void onSaveSettings();

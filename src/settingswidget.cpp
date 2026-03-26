@@ -47,16 +47,23 @@ void SettingsWidget::setupUI() {
   priceLayout->addRow("Status:", apiStatusLabel);
   priceLayout->addRow("Last updated:", priceLastUpdatedLabel);
   sourceComboBox = new QComboBox(priceGroup);
-  sourceComboBox->addItems({"Skinport", "white.market", "market.csgo.com"});
+  sourceComboBox->addItems({"white.market  (~1 hour)",
+                             "white.market (fast)  (~10 min)",
+                             "Loot.Farm  (~1 min)",
+                             "Buff163  (8-24 hours)"});
   priceLayout->addRow("Price source:", sourceComboBox);
 
   connect(
       sourceComboBox, QOverload<int>::of(&QComboBox::currentIndexChanged), this,
       [this]() {
         static const QMap<QString, QString> urls = {
-            {"Skinport", "https://fursense.lol/prices.json"},
-            {"white.market", "https://fursense.lol/prices-whitemarket.json"},
-            {"market.csgo.com", "https://fursense.lol/prices-marketcsgo.json"}};
+            {"white.market  (~1 hour)",
+             "https://s3.white.market/export/v1/prices/730.json"},
+            {"white.market (fast)  (~10 min)",
+             "https://s3.white.market/export/v1/prices/730.10min.json"},
+            {"Loot.Farm  (~1 min)", "https://loot.farm/fullprice.json"},
+            {"Buff163  (8-24 hours)",
+             "https://prices.csgotrader.app/latest/buff163.json"}};
         QString url = urls.value(sourceComboBox->currentText());
         api->setSourceUrl(url);
         apiStatusLabel->setText("Switching...");
@@ -151,6 +158,32 @@ void SettingsWidget::setupUI() {
     refreshAccountsList();
   }
 
+  // ── Trade Offers group ────────────────────────────────────────────────────
+  auto *tradesGroup = new QGroupBox("Trade Offers", this);
+  auto *tradesLayout = new QVBoxLayout(tradesGroup);
+
+  auto *resetConsentBtn =
+      new QPushButton("Reset trade offers consent", tradesGroup);
+  resetConsentBtn->setFixedHeight(32);
+
+  auto *resetConsentNote = new QLabel(
+      "Resetting consent will show the consent screen again the next time "
+      "you visit the Trades tab.",
+      tradesGroup);
+  resetConsentNote->setWordWrap(true);
+  resetConsentNote->setStyleSheet("color: #666; font-size: 11px;");
+
+  tradesLayout->addWidget(resetConsentBtn);
+  tradesLayout->addWidget(resetConsentNote);
+  mainLayout->addWidget(tradesGroup);
+
+  connect(resetConsentBtn, &QPushButton::clicked, this, [this]() {
+    emit tradesConsentReset();
+    QMessageBox::information(this, "Consent Reset",
+        "Consent reset. You will see the consent screen again next time "
+        "you visit the Trades tab.");
+  });
+
   // ── Save button ───────────────────────────────────────────────────────────
   auto *buttonLayout = new QHBoxLayout();
   saveButton = new QPushButton("Save Settings", this);
@@ -201,7 +234,7 @@ void SettingsWidget::loadSettings() {
   updateIntervalSpinBox->setValue(settings.value("updateInterval", 5).toInt());
   currencyComboBox->setCurrentText(
       settings.value("currency", "USD").toString());
-  QString savedSource = settings.value("priceSource", "Skinport").toString();
+  QString savedSource = settings.value("priceSource", "white.market (fast)  (~10 min)").toString();
   int idx = sourceComboBox->findText(savedSource);
   if (idx >= 0)
     sourceComboBox->setCurrentIndex(idx);

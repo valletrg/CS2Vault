@@ -27,6 +27,7 @@
   "dependencies": {
     "node-cs2": "^2.2.3",
     "steam-session": "^1.9.4",
+    "steam-tradeoffer-manager": "^2.12.2",
     "steam-user": "^5.3.0",
     "steamcommunity": "^3.49.0",
     "steamid": "^2.1.0"

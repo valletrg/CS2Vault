@@ -8,6 +8,7 @@
 #include <QCloseEvent>
 #include <QMainWindow>
 #include <QMenu>
+#include <QSet>
 #include <QStackedWidget>
 #include <QSystemTrayIcon>
 #include <QTimer>
@@ -24,6 +25,9 @@ class PriceEmpireAPI;
 class SteamAPI;
 class PortfolioManager;
 class WatchlistManager;
+class TradeHistoryManager;
+class TradeHistoryWidget;
+class TradesWidget;
 
 class MainWindow : public QMainWindow {
   Q_OBJECT
@@ -48,6 +52,10 @@ private:
   void loadSettings();
   void saveSettings();
   void closeEvent(QCloseEvent *event) override;
+  void onInventoryReceived(const QList<GCItem> &items,
+                           const QList<GCContainer> &containers);
+  void onStorageUnitReceived(const QString &casketId,
+                             const QList<GCItem> &items);
 
   QStackedWidget *stackedWidget = nullptr;
   QWidget *sidebar = nullptr;
@@ -58,12 +66,15 @@ private:
   PortfolioWidget *portfolioWidget = nullptr;
   SettingsWidget *settingsWidget = nullptr;
   WatchlistWidget *watchlistWidget = nullptr;
+  TradeHistoryWidget *tradeHistoryWidget = nullptr;
+  TradesWidget *tradesWidget = nullptr;
 
   AccountManager *accountManager = nullptr;
   PriceEmpireAPI *api = nullptr;
   SteamAPI *steamApi = nullptr;
   PortfolioManager *portfolioManager = nullptr;
   WatchlistManager *watchlistManager = nullptr;
+  TradeHistoryManager *tradeHistoryManager = nullptr;
   ItemDatabase *itemDb = nullptr;
 
   QTimer *priceUpdateTimer = nullptr;
@@ -71,6 +82,9 @@ private:
   QMenu *trayMenu = nullptr;
   SteamCompanion *steamCompanion = nullptr;
   UpdateChecker *updateChecker = nullptr;
+
+  // Inventory snapshot for change detection
+  QSet<QString> m_knownStorageAssetIds;
 };
 
 #endif // MAINWINDOW_H

@@ -10,6 +10,7 @@ set(CMAKE_INSTALL_PREFIX "/usr/local" CACHE PATH "Installation prefix")
 
 # Find Qt6
 find_package(Qt6 REQUIRED COMPONENTS Widgets Network Charts)
+find_package(ZLIB REQUIRED)
 
 # Enable automatic compilation of Qt resource files
 set(CMAKE_AUTOMOC ON)
@@ -34,6 +35,9 @@ set(SOURCES
     src/dashboardwidget.cpp
     src/watchlistwidget.cpp
     src/watchlistmanager.cpp
+    src/tradehistory.cpp
+    src/tradehistorywidget.cpp
+    src/tradeswidget.cpp
 )
 
 set(HEADERS
@@ -53,6 +57,9 @@ set(HEADERS
     src/itemdatabase.h
     src/watchlistwidget.h
     src/watchlistmanager.h
+    src/tradehistory.h
+    src/tradehistorywidget.h
+    src/tradeswidget.h
 )
 
 set(RESOURCES
@@ -116,4 +123,5 @@ target_link_libraries(${PROJECT_NAME} PRIVATE
     Qt6::Charts
     Qt6::Svg
     Qt6::SvgWidgets
+    ZLIB::ZLIB
 )

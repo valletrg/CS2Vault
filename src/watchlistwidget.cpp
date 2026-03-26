@@ -750,13 +750,26 @@ void WatchlistWidget::updateChart(int itemIndex) {
   chartItemLabel->show();
 
   if (filtered.size() < 2) {
-    chartView->hide();
-    chartPlaceholder->show();
-    chartPlaceholder->setText(
-        "Not enough data to display chart.\nAt least 2 history points are "
-        "required.");
-    priceBadge->hide();
-    return;
+    if (item.priceHistory.size() < 2 && item.currentPrice > 0.0) {
+      // No real history yet: synthesise a 24-hour window from the current price
+      filtered.clear();
+      qint64 nowSec = QDateTime::currentSecsSinceEpoch();
+      WatchlistPricePoint seed, cur;
+      seed.timestamp = nowSec - qint64(24) * 3600;
+      seed.price     = item.currentPrice;
+      cur.timestamp  = nowSec;
+      cur.price      = item.currentPrice;
+      filtered.append(seed);
+      filtered.append(cur);
+    } else {
+      chartView->hide();
+      chartPlaceholder->show();
+      chartPlaceholder->setText(
+          "Not enough data to display chart.\nAt least 2 history points are "
+          "required.");
+      priceBadge->hide();
+      return;
+    }
   }
 
   chartPlaceholder->hide();

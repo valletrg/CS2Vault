@@ -13,5 +13,7 @@
         <file>fonts/ZenDots-Regular.ttf</file>
         <file>icons/clipboard.svg</file>
         <file>icons/watchlist.svg</file>
+        <file>icons/history.svg</file>
+        <file>icons/trades.svg</file>
     </qresource>
 </RCC>

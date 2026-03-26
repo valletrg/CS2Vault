@@ -26,8 +26,58 @@
 #include <QSpinBox>
 #include <QSplitter>
 #include <QTextStream>
+#include <QStyledItemDelegate>
 #include <QThread>
+#include <QTimeZone>
 #include <QVBoxLayout>
+
+// ---------------------------------------------------------------------------
+// Float bar delegate — draws the float value (colored by wear tier) plus a
+// thin progress bar at the bottom of the cell showing where the float sits
+// within the skin's possible range.
+// ---------------------------------------------------------------------------
+class FloatBarDelegate : public QStyledItemDelegate {
+public:
+  using QStyledItemDelegate::QStyledItemDelegate;
+
+  static QColor wearColor(double fv) {
+    if (fv < 0.07)       return QColor("#4fc3f7");
+    else if (fv < 0.15)  return QColor("#81c784");
+    else if (fv < 0.38)  return QColor("#ffb74d");
+    else if (fv < 0.45)  return QColor("#ef9a9a");
+    else                 return QColor("#e57373");
+  }
+
+  void paint(QPainter *painter, const QStyleOptionViewItem &option,
+             const QModelIndex &index) const override {
+    // Default rendering handles text and selection background
+    QStyledItemDelegate::paint(painter, option, index);
+
+    double fv   = index.data(Qt::UserRole).toDouble();
+    double minF = index.data(Qt::UserRole + 1).toDouble();
+    double maxF = index.data(Qt::UserRole + 2).toDouble();
+
+    if (fv <= 0.0 || maxF <= minF)
+      return;
+
+    QRect r = option.rect;
+    QRect barRect(r.left() + 3, r.bottom() - 5, r.width() - 6, 3);
+
+    painter->fillRect(barRect, QColor(0x2a, 0x2d, 0x3a));
+
+    double pos = qBound(0.0, (fv - minF) / (maxF - minF), 1.0);
+    int fillW = qRound(barRect.width() * pos);
+    if (fillW > 0)
+      painter->fillRect(QRect(barRect.left(), barRect.top(), fillW, barRect.height()),
+                        wearColor(fv));
+  }
+
+  QSize sizeHint(const QStyleOptionViewItem &option,
+                 const QModelIndex &index) const override {
+    QSize s = QStyledItemDelegate::sizeHint(option, index);
+    return {s.width(), qMax(s.height(), 30)};
+  }
+};
 
 // ---------------------------------------------------------------------------
 // Helper: numeric sort for table columns that contain formatted numbers
@@ -50,9 +100,13 @@ public:
 PortfolioWidget::PortfolioWidget(PriceEmpireAPI *api, SteamAPI *steamApi,
                                  PortfolioManager *portfolioManager,
                                  SteamCompanion *steamCompanion,
+                                 ItemDatabase *itemDb,
+                                 TradeHistoryManager *tradeHistoryManager,
                                  QWidget *parent)
     : QWidget(parent), api(api), steamApi(steamApi),
-      portfolioManager(portfolioManager), autoSaveTimer(new QTimer(this)),
+      portfolioManager(portfolioManager), itemDb(itemDb),
+      tradeHistoryManager(tradeHistoryManager),
+      autoSaveTimer(new QTimer(this)),
       loadingDialog(nullptr), steamCompanion(steamCompanion) {
   steamCompanion->blockSignals(true);
   setupUI();
@@ -189,6 +243,7 @@ void PortfolioWidget::setupUI() {
   portfolioTable->setEditTriggers(QAbstractItemView::NoEditTriggers);
   portfolioTable->setSortingEnabled(true);
   portfolioTable->setMinimumHeight(180);
+  portfolioTable->setItemDelegateForColumn(2, new FloatBarDelegate(portfolioTable));
   connect(portfolioTable, &QTableWidget::itemDoubleClicked, this,
           [this]() { onEditItem(); });
   mainLayout->addWidget(portfolioTable, 1);
@@ -460,11 +515,14 @@ void PortfolioWidget::setupUI() {
           &PortfolioWidget::onGCInventoryReceived);
   connect(steamCompanion, &SteamCompanion::storageUnitReceived, this,
           &PortfolioWidget::onGCStorageUnitReceived);
+  connect(steamCompanion, &SteamCompanion::floatsReceived, this,
+          &PortfolioWidget::onFloatsReceived);
 
   connect(gcLoginButton, &QPushButton::clicked, this,
           &PortfolioWidget::onGCLoginClicked);
-  connect(gcImportButton, &QPushButton::clicked, this,
-          &PortfolioWidget::onGCImportClicked);
+  if (gcImportButton)
+    connect(gcImportButton, &QPushButton::clicked, this,
+            &PortfolioWidget::onGCImportClicked);
   connect(gcStorageUnitButton, &QPushButton::clicked, this,
           &PortfolioWidget::onGCStorageUnitClicked);
 
@@ -561,6 +619,7 @@ void PortfolioWidget::refreshPortfolioList() {
 void PortfolioWidget::loadPortfolioItems() {
   populateTable();
   calculateStatistics();
+  updateChart();
 }
 
 void PortfolioWidget::populateTable() {
@@ -584,8 +643,21 @@ void PortfolioWidget::populateTable() {
     nameItem->setData(Qt::UserRole, i);
 
     QTableWidgetItem *conditionItem = new QTableWidgetItem(item.condition);
-    QTableWidgetItem *floatItem =
-        new QTableWidgetItem(QString::number(item.floatValue, 'f', 6));
+
+    double fv = item.floatValue;
+    auto *floatItem = new NumericTableWidgetItem(fv > 0.0 ? QString::number(fv, 'f', 6) : "");
+    floatItem->setData(Qt::UserRole, fv);
+    if (fv > 0.0) {
+      floatItem->setForeground(FloatBarDelegate::wearColor(fv));
+      double minF = 0.0, maxF = 1.0;
+      if (itemDb && itemDb->isLoaded()) {
+        ItemInfo info = itemDb->lookup(marketName(item));
+        minF = info.minFloat;
+        maxF = info.maxFloat;
+      }
+      floatItem->setData(Qt::UserRole + 1, minF);
+      floatItem->setData(Qt::UserRole + 2, maxF);
+    }
 
     auto *qtyItem = new NumericTableWidgetItem(QString::number(item.quantity));
     qtyItem->setData(Qt::UserRole, item.quantity);
@@ -689,11 +761,37 @@ void PortfolioWidget::updateChart() {
       filtered.append(pt);
   }
 
-  // Placeholder if < 2 points
+  // Placeholder if < 2 points — on first launch synthesise a seed point
   if (filtered.size() < 2) {
-    chartView->hide();
-    chartPlaceholder->show();
-    return;
+    if (portfolio.history.size() < 2) {
+      // No real history yet: compute current totals and fake a 24-hour window
+      double totalValue = 0.0, totalCost = 0.0;
+      for (const auto &item : portfolio.items) {
+        totalValue += item.currentPrice * item.quantity;
+        totalCost  += item.buyPrice     * item.quantity;
+      }
+      if (totalValue > 0.0 || totalCost > 0.0) {
+        filtered.clear();
+        PortfolioHistoryPoint seed, cur;
+        seed.timestamp  = now - qint64(24) * 3600 * 1000;
+        seed.totalValue = totalValue;
+        seed.totalCost  = totalCost;
+        cur.timestamp   = now;
+        cur.totalValue  = totalValue;
+        cur.totalCost   = totalCost;
+        filtered.append(seed);
+        filtered.append(cur);
+      } else {
+        chartView->hide();
+        chartPlaceholder->show();
+        return;
+      }
+    } else {
+      // Real history exists but none falls in the selected time range
+      chartView->hide();
+      chartPlaceholder->show();
+      return;
+    }
   }
   chartPlaceholder->hide();
   chartView->show();
@@ -709,8 +807,8 @@ void PortfolioWidget::updateChart() {
   }
 
   axisX->setRange(
-      QDateTime::fromMSecsSinceEpoch(filtered.first().timestamp),
-      QDateTime::fromMSecsSinceEpoch(filtered.last().timestamp));
+      QDateTime::fromMSecsSinceEpoch(filtered.first().timestamp, QTimeZone::UTC),
+      QDateTime::fromMSecsSinceEpoch(filtered.last().timestamp, QTimeZone::UTC));
 
   double padding = (maxV - minV) * 0.1;
   if (padding < 1.0)
@@ -806,7 +904,9 @@ void PortfolioWidget::updateAllPrices() {
 
   loadPortfolioItems();
   calculateStatistics();
-  portfolioManager->recordHistoryPoint(currentPortfolioId);
+  portfolioManager->recordHistoryPoint(currentPortfolioId,
+                                       api->isFastSource());
+  updateChart();
   emit portfolioUpdated();
 }
 
@@ -841,7 +941,9 @@ void PortfolioWidget::onPriceCheckTick() {
         QString("Done — %1 items price checked.").arg(priceCheckDone));
     loadPortfolioItems();
     calculateStatistics();
-    portfolioManager->recordHistoryPoint(currentPortfolioId);
+    portfolioManager->recordHistoryPoint(currentPortfolioId,
+                                         api->isFastSource());
+    updateChart();
     QTimer::singleShot(3000, this, [this]() { queueGroup->hide(); });
     return;
   }
@@ -1024,6 +1126,12 @@ void PortfolioWidget::onAddItem() {
 
   QLineEdit notesEdit;
 
+  QCheckBox *logToHistory = nullptr;
+  if (tradeHistoryManager) {
+    logToHistory = new QCheckBox("Log to trade history", &dialog);
+    logToHistory->setChecked(true);
+  }
+
   form.addRow("Weapon:", &weaponCombo);
   form.addRow("Skin Name:", &skinEdit);
   form.addRow("Condition:", &conditionCombo);
@@ -1031,6 +1139,8 @@ void PortfolioWidget::onAddItem() {
   form.addRow("Quantity:", &quantitySpinBox);
   form.addRow("Buy Price:", &buyPriceSpinBox);
   form.addRow("Notes:", &notesEdit);
+  if (logToHistory)
+    form.addRow("", logToHistory);
 
   QDialogButtonBox buttons(QDialogButtonBox::Ok | QDialogButtonBox::Cancel);
   form.addRow(&buttons);
@@ -1065,6 +1175,19 @@ void PortfolioWidget::onAddItem() {
   item.currentPrice = price > 0.0 ? price : item.buyPrice;
 
   portfolioManager->addItem(currentPortfolioId, item);
+
+  if (logToHistory && logToHistory->isChecked() && item.buyPrice > 0.0) {
+    TradeHistoryEntry entry;
+    entry.itemName = marketName;
+    entry.type = "manual_buy";
+    entry.price = item.buyPrice;
+    entry.buyPrice = item.buyPrice;
+    entry.quantity = item.quantity;
+    entry.timestamp = QDateTime::currentMSecsSinceEpoch();
+    entry.notes = item.notes;
+    tradeHistoryManager->addEntry(entry);
+  }
+
   loadPortfolioItems();
   emit portfolioUpdated();
 }
@@ -1079,14 +1202,61 @@ void PortfolioWidget::onRemoveItem() {
     return;
   int dataIndex = nameCell->data(Qt::UserRole).toInt();
 
-  auto reply =
-      QMessageBox::question(this, "Confirm Remove", "Remove this item?",
-                            QMessageBox::Yes | QMessageBox::No);
-  if (reply == QMessageBox::Yes) {
-    portfolioManager->removeItem(currentPortfolioId, dataIndex);
-    loadPortfolioItems();
-    emit portfolioUpdated();
+  Portfolio portfolio = portfolioManager->getPortfolio(currentPortfolioId);
+  if (dataIndex < 0 || dataIndex >= portfolio.items.size())
+    return;
+  const PortfolioItem &cur = portfolio.items[dataIndex];
+
+  QDialog dialog(this);
+  dialog.setWindowTitle("Remove Item");
+  dialog.setMinimumWidth(350);
+  auto *form = new QFormLayout(&dialog);
+
+  auto *infoLabel =
+      new QLabel(QString("Remove \"%1\"?").arg(cur.skinName), &dialog);
+  form->addRow(infoLabel);
+
+  QDoubleSpinBox *sellPriceSpinBox = nullptr;
+  QCheckBox *logToHistory = nullptr;
+
+  if (tradeHistoryManager) {
+    sellPriceSpinBox = new QDoubleSpinBox(&dialog);
+    sellPriceSpinBox->setRange(0.0, 999999.0);
+    sellPriceSpinBox->setDecimals(2);
+    sellPriceSpinBox->setPrefix("$");
+    sellPriceSpinBox->setValue(cur.currentPrice);
+
+    logToHistory = new QCheckBox("Log to trade history", &dialog);
+    logToHistory->setChecked(true);
+
+    form->addRow("Sell Price:", sellPriceSpinBox);
+    form->addRow("", logToHistory);
   }
+
+  auto *buttons =
+      new QDialogButtonBox(QDialogButtonBox::Yes | QDialogButtonBox::Cancel);
+  form->addRow(buttons);
+  connect(buttons, &QDialogButtonBox::accepted, &dialog, &QDialog::accept);
+  connect(buttons, &QDialogButtonBox::rejected, &dialog, &QDialog::reject);
+
+  if (dialog.exec() != QDialog::Accepted)
+    return;
+
+  if (logToHistory && logToHistory->isChecked() &&
+      sellPriceSpinBox->value() > 0.0) {
+    TradeHistoryEntry entry;
+    entry.itemName = marketName(cur);
+    entry.type = "manual_sell";
+    entry.price = sellPriceSpinBox->value();
+    entry.sellPrice = sellPriceSpinBox->value();
+    entry.quantity = cur.quantity;
+    entry.timestamp = QDateTime::currentMSecsSinceEpoch();
+    tradeHistoryManager->addEntry(entry);
+  }
+
+  portfolioManager->removeItem(currentPortfolioId, dataIndex);
+  loadPortfolioItems();
+  emit portfolioUpdated();
 }
 
 void PortfolioWidget::onEditItem() {
@@ -1452,6 +1622,23 @@ void PortfolioWidget::onGCInventoryReceived(
     return;
 
   lastFetchedItems = items;
+
+  // Build assetid → market_hash_name for float matching
+  m_assetidToMarketName.clear();
+  for (const GCItem &item : items) {
+    if (!item.id.isEmpty() && !item.marketHashName.isEmpty())
+      m_assetidToMarketName[item.id] = item.marketHashName;
+  }
+
+  // Kick off float fetch for backpack items that have an inspect link
+  QList<GCItem> floatCandidates;
+  for (const GCItem &item : items) {
+    if (!item.inspectLink.isEmpty() && item.casketId.isEmpty())
+      floatCandidates.append(item);
+  }
+  if (!floatCandidates.isEmpty())
+    steamCompanion->requestFloats(floatCandidates);
+
   gcStatusLabel->setText(
       QString("Found %1 items. Click 'Select Items to Import' when ready.")
           .arg(items.size()));
@@ -1479,6 +1666,36 @@ void PortfolioWidget::onGCStorageUnitReceived(const QString & /*casketId*/,
   // Storage unit items are not directly imported into portfolio here;
   // the Sto
   // rageUnitWidget handles moves. We just surface them if needed.
+}
+
+void PortfolioWidget::onFloatsReceived(const QMap<QString, GCItem> &updates) {
+  if (currentPortfolioId.isEmpty())
+    return;
+
+  bool changed = false;
+  for (auto it = updates.constBegin(); it != updates.constEnd(); ++it) {
+    const GCItem &gcItem = it.value();
+    if (gcItem.paintWear <= 0.0)
+      continue;
+
+    QString marketHashName = m_assetidToMarketName.value(it.key());
+    if (marketHashName.isEmpty())
+      continue;
+
+    Portfolio portfolio = portfolioManager->getPortfolio(currentPortfolioId);
+    for (int i = 0; i < portfolio.items.size(); ++i) {
+      PortfolioItem pi = portfolio.items[i];
+      if (pi.skinName == marketHashName && pi.floatValue <= 0.0) {
+        pi.floatValue = gcItem.paintWear;
+        portfolioManager->updateItem(currentPortfolioId, i, pi);
+        changed = true;
+        break; // only update first match per assetid
+      }
+    }
+  }
+
+  if (changed)
+    populateTable();
 }
 
 QString PortfolioWidget::marketName(const PortfolioItem &item) const {

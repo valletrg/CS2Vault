@@ -1,6 +1,7 @@
 #include "portfoliomanager.h"
 
 #include <QDateTime>
+#include <QTimeZone>
 #include <QDebug>
 #include <QDir>
 #include <QFile>
@@ -26,7 +27,7 @@ QString PortfolioManager::generateId() const {
 }
 
 QString PortfolioManager::getCurrentTimestamp() const {
-  return QDateTime::currentDateTime().toString(Qt::ISODate);
+  return QDateTime::currentDateTimeUtc().toString(Qt::ISODate);
 }
 
 QString PortfolioManager::createPortfolio(const QString &name,
@@ -162,7 +163,8 @@ void PortfolioManager::importFromSteamInventory(
   emit portfolioChanged(portfolioId);
 }
 
-void PortfolioManager::recordHistoryPoint(const QString &portfolioId) {
+void PortfolioManager::recordHistoryPoint(const QString &portfolioId,
+                                          bool forced) {
   if (!portfolios.contains(portfolioId)) {
     return;
   }
@@ -177,17 +179,20 @@ void PortfolioManager::recordHistoryPoint(const QString &portfolioId) {
     totalValue += (item.currentPrice * item.quantity);
   }
 
-  qint64 currentTimestamp = QDateTime::currentSecsSinceEpoch();
+  qint64 currentTimestamp = QDateTime::currentMSecsSinceEpoch();
 
-  bool shouldRecord = false;
-  if (portfolio.history.isEmpty()) {
-    shouldRecord = true;
-  } else {
-    const PortfolioHistoryPoint &lastPoint = portfolio.history.last();
-    // Only record once per calendar day — keeps stored data very lean
-    QDate lastDate = QDateTime::fromSecsSinceEpoch(lastPoint.timestamp).date();
-    QDate today = QDate::currentDate();
-    shouldRecord = (lastDate < today);
+  bool shouldRecord = forced;
+  if (!shouldRecord) {
+    if (portfolio.history.isEmpty()) {
+      shouldRecord = true;
+    } else {
+      const PortfolioHistoryPoint &lastPoint = portfolio.history.last();
+      // Only record once per calendar day — keeps stored data very lean
+      QDate lastDate =
+          QDateTime::fromMSecsSinceEpoch(lastPoint.timestamp, QTimeZone::UTC).date();
+      QDate today = QDate::currentDate();
+      shouldRecord = (lastDate < today);
+    }
   }
 
   if (shouldRecord) {
@@ -236,7 +241,7 @@ void PortfolioManager::saveToFile() {
   }
 
   root["portfolios"] = portfoliosArray;
-  root["version"] = "1.0";
+  root["version"] = 2;
 
   QFile file(dataFile);
   if (file.open(QIODevice::WriteOnly)) {
@@ -266,6 +271,12 @@ void PortfolioManager::loadFromFile() {
   }
 
   QJsonObject root = doc.object();
+
+  // Version 2 introduced millisecond UTC timestamps.
+  // Any file without version 2 has second-based timestamps that would
+  // corrupt the chart axis, so wipe history and let it rebuild cleanly.
+  bool historyValid = (root["version"].toInt(0) >= 2);
+
   QJsonArray portfoliosArray = root["portfolios"].toArray();
 
   portfolios.clear();
@@ -285,14 +296,16 @@ void PortfolioManager::loadFromFile() {
       portfolio.items.append(itemFromJson(itemVal.toObject()));
     }
 
-    QJsonArray historyArray = portfolioObj["history"].toArray();
-    for (const QJsonValue &ptVal : historyArray) {
-      QJsonObject ptObj = ptVal.toObject();
-      PortfolioHistoryPoint pt;
-      pt.timestamp = ptObj["timestamp"].toVariant().toLongLong();
-      pt.totalCost = ptObj["totalCost"].toDouble();
-      pt.totalValue = ptObj["totalValue"].toDouble();
-      portfolio.history.append(pt);
+    if (historyValid) {
+      QJsonArray historyArray = portfolioObj["history"].toArray();
+      for (const QJsonValue &ptVal : historyArray) {
+        QJsonObject ptObj = ptVal.toObject();
+        PortfolioHistoryPoint pt;
+        pt.timestamp = ptObj["timestamp"].toVariant().toLongLong();
+        pt.totalCost = ptObj["totalCost"].toDouble();
+        pt.totalValue = ptObj["totalValue"].toDouble();
+        portfolio.history.append(pt);
+      }
     }
 
     portfolios[portfolio.id] = portfolio;

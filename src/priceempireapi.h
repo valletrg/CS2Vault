@@ -30,6 +30,9 @@ public:
   QString lastUpdated() const { return m_lastUpdated; }
 
   bool arePricesLoaded() const { return m_pricesLoaded; }
+  bool isFastSource() const {
+    return m_sourceUrl.contains("10min") || m_sourceUrl.contains("loot.farm");
+  }
 
 signals:
   void pricesLoaded();
@@ -39,13 +42,12 @@ signals:
 
 private:
   void parsePrices(const QByteArray &data);
+  int cacheTtlSeconds() const;
   QString m_lastUpdated;
   QNetworkAccessManager *networkManager;
   QMap<QString, double> priceMap;
   bool m_pricesLoaded = false;
-  QString m_sourceUrl = "https://fursense.lol/prices.json";
-
-  static constexpr const char *PRICES_URL = "https://fursense.lol/prices.json";
+  QString m_sourceUrl = "https://s3.white.market/export/v1/prices/730.10min.json";
 };
 
 #endif // PRICEEMPIREAPI_H

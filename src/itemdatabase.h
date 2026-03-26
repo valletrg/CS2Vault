@@ -31,6 +31,7 @@ public:
   // e.g. "AK-47 | Redline (Field-Tested)" or "AK-47 | Redline"
   ItemInfo lookup(const QString &marketHashName) const;
   bool hasItem(const QString &marketHashName) const;
+  QStringList allItemNames() const { return m_items.keys(); }
 
 signals:
   void loaded();

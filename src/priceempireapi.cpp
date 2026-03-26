@@ -2,11 +2,37 @@
 
 #include <QDebug>
 #include <QFileInfo>
+#include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QNetworkReply>
 #include <QNetworkRequest>
 #include <QStandardPaths>
+#include <zlib.h>
+
+static QByteArray gzipDecompress(const QByteArray &data) {
+  z_stream zs = {};
+  if (inflateInit2(&zs, 15 + 16) != Z_OK)
+    return {};
+
+  zs.avail_in = static_cast<uInt>(data.size());
+  zs.next_in = reinterpret_cast<Bytef *>(const_cast<char *>(data.data()));
+
+  QByteArray result;
+  char buf[65536];
+  int ret;
+  do {
+    zs.avail_out = sizeof(buf);
+    zs.next_out = reinterpret_cast<Bytef *>(buf);
+    ret = inflate(&zs, Z_NO_FLUSH);
+    if (ret == Z_STREAM_ERROR || ret == Z_DATA_ERROR || ret == Z_MEM_ERROR)
+      break;
+    result.append(buf, static_cast<qsizetype>(sizeof(buf) - zs.avail_out));
+  } while (ret != Z_STREAM_END && zs.avail_in > 0);
+
+  inflateEnd(&zs);
+  return result;
+}
 
 PriceEmpireAPI::PriceEmpireAPI(QObject *parent)
     : QObject(parent), networkManager(new QNetworkAccessManager(this)) {}
@@ -19,6 +45,16 @@ bool PriceEmpireAPI::testConnection() {
   return m_pricesLoaded && !priceMap.isEmpty();
 }
 
+int PriceEmpireAPI::cacheTtlSeconds() const {
+  if (m_sourceUrl.contains("loot.farm"))
+    return 2 * 60;
+  if (m_sourceUrl.contains("10min"))
+    return 15 * 60;
+  if (m_sourceUrl.contains("buff163"))
+    return 12 * 3600;
+  return 60 * 60; // white.market 1h
+}
+
 void PriceEmpireAPI::loadPrices() {
   if (m_pricesLoaded)
     return;
@@ -26,13 +62,13 @@ void PriceEmpireAPI::loadPrices() {
   // Check disk cache first
   QString cacheDir =
       QStandardPaths::writableLocation(QStandardPaths::AppDataLocation);
-  QString cacheFile = cacheDir + "/prices-cache.json";
-  QString sourceName = QUrl(m_sourceUrl).fileName(); // e.g. "prices.json"
+  QString sourceName = QUrl(m_sourceUrl).fileName();
   QString specificCache = cacheDir + "/cache-" + sourceName;
 
   QFileInfo fi(specificCache);
-  bool cacheValid = fi.exists() && fi.lastModified().secsTo(
-                                       QDateTime::currentDateTime()) < 6 * 3600;
+  bool cacheValid = fi.exists() &&
+                    fi.lastModified().secsTo(QDateTime::currentDateTime()) <
+                        cacheTtlSeconds();
 
   if (cacheValid) {
     qInfo() << "Using cached prices from" << specificCache;
@@ -51,6 +87,9 @@ void PriceEmpireAPI::loadPrices() {
                     "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36");
   request.setRawHeader("Accept", "application/json");
 
+  if (m_sourceUrl.contains("buff163"))
+    request.setRawHeader("Accept-Encoding", "gzip");
+
   QNetworkReply *reply = networkManager->get(request);
 
   connect(
@@ -67,6 +106,13 @@ void PriceEmpireAPI::loadPrices() {
 
         QByteArray data = reply->readAll();
 
+        // Decompress gzip if magic bytes are present
+        if (data.size() >= 2 &&
+            static_cast<unsigned char>(data[0]) == 0x1f &&
+            static_cast<unsigned char>(data[1]) == 0x8b) {
+          data = gzipDecompress(data);
+        }
+
         // Save to cache
         QFile f(specificCache);
         if (f.open(QIODevice::WriteOnly)) {
@@ -80,22 +126,41 @@ void PriceEmpireAPI::loadPrices() {
 
 void PriceEmpireAPI::parsePrices(const QByteArray &data) {
   QJsonDocument doc = QJsonDocument::fromJson(data);
-  if (!doc.isObject()) {
-    emit pricesError("Invalid prices JSON");
-    return;
-  }
-
-  QJsonObject obj = doc.object();
   priceMap.clear();
 
-  if (obj.contains("_updated"))
-    m_lastUpdated = obj["_updated"].toString();
-
-  for (auto it = obj.constBegin(); it != obj.constEnd(); ++it) {
-    // Skip metadata keys that start with underscore
-    if (it.key().startsWith('_'))
-      continue;
-    priceMap[it.key()] = it.value().toDouble();
+  if (doc.isArray()) {
+    const QJsonArray arr = doc.array();
+    if (!arr.isEmpty() && arr.first().toObject().contains("market_hash_name")) {
+      // white.market format: [{market_hash_name, price (string)}, ...]
+      for (const QJsonValue &val : arr) {
+        QJsonObject entry = val.toObject();
+        QString name = entry["market_hash_name"].toString();
+        double price = entry["price"].toString().toDouble();
+        if (!name.isEmpty() && price > 0.0)
+          priceMap[name] = price;
+      }
+    } else {
+      // Loot.Farm format: [{name, price (integer cents)}, ...]
+      for (const QJsonValue &val : arr) {
+        QJsonObject entry = val.toObject();
+        QString name = entry["name"].toString();
+        double price = entry["price"].toInt() / 100.0;
+        if (!name.isEmpty() && price > 0.0)
+          priceMap[name] = price;
+      }
+    }
+  } else if (doc.isObject()) {
+    // Buff163 format: {"AK-47 | Redline (FT)": {"starting_at": {"price": 2.61}, ...}}
+    QJsonObject obj = doc.object();
+    for (auto it = obj.constBegin(); it != obj.constEnd(); ++it) {
+      QJsonObject entry = it.value().toObject();
+      double price = entry["starting_at"].toObject()["price"].toDouble();
+      if (!it.key().isEmpty() && price > 0.0)
+        priceMap[it.key()] = price;
+    }
+  } else {
+    emit pricesError("Invalid prices JSON");
+    return;
   }
 
   m_pricesLoaded = true;
@@ -113,10 +178,16 @@ double PriceEmpireAPI::fetchPrice(const QString &skinName,
     return 0.0;
   }
 
-  double price = priceMap.value(skinName, 0.0);
+  // Strip trailing " (Unknown)" — pins, patches, etc. get this appended
+  // and it causes price lookup misses.
+  QString cleanName = skinName;
+  if (cleanName.endsWith(" (Unknown)"))
+    cleanName.chop(10); // length of " (Unknown)"
+
+  double price = priceMap.value(cleanName, 0.0);
 
   if (price <= 0.0) {
-    qWarning() << "No price found for:" << skinName;
+    qWarning() << "No price found for:" << cleanName;
   }
 
   return price;

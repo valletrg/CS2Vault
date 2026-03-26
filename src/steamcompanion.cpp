@@ -217,6 +217,59 @@ void SteamCompanion::handleMessage(const QJsonObject &msg) {
     emit transferComplete(msg["action"].toString(), msg["casket_id"].toString(),
                           msg["item_id"].toString());
 
+  } else if (type == "floats") {
+    QMap<QString, GCItem> updates;
+    for (const QJsonValue &v : msg["items"].toArray()) {
+      QJsonObject o = v.toObject();
+      QString id = o["id"].toString();
+      if (id.isEmpty())
+        continue;
+      GCItem item;
+      item.id = id;
+      item.paintWear = o["float_value"].toDouble();
+      item.paintSeed = o["paint_seed"].toInt();
+      item.paintIndex = o["paint_index"].toInt();
+      updates[id] = item;
+    }
+    if (!updates.isEmpty())
+      emit floatsReceived(updates);
+
+  } else if (type == "trade_offers") {
+    QList<TradeOfferData> offers;
+    for (const QJsonValue &v : msg["offers"].toArray())
+      offers.append(parseTradeOffer(v.toObject()));
+    emit tradeOffersReceived(offers);
+
+  } else if (type == "new_trade_offer") {
+    emit newTradeOffer(parseTradeOffer(msg["offer"].toObject()));
+
+  } else if (type == "trade_offer_accepted") {
+    QString offerId = msg["offer_id"].toString();
+    QString status = msg["status"].toString();
+    if (status == "family_view") {
+      emit familyViewRequired(offerId);
+    } else {
+      emit tradeOfferAccepted(offerId, status, msg["error"].toString());
+    }
+
+  } else if (type == "trade_offer_cancelled") {
+    emit tradeOfferCancelled(msg["offer_id"].toString(),
+                             msg["status"].toString(),
+                             msg["error"].toString());
+
+  } else if (type == "trade_offer_sent") {
+    emit tradeOfferSent(msg["offer_id"].toString(),
+                        msg["status"].toString(),
+                        msg["error"].toString());
+
+  } else if (type == "trade_offer_changed") {
+    emit tradeOfferChanged(msg["offer_id"].toString(),
+                           msg["new_state"].toInt());
+
+  } else if (type == "parental_unlock") {
+    emit parentalUnlockResult(msg["success"].toBool(),
+                              msg["error"].toString());
+
   } else if (type == "error") {
     emit errorOccurred(msg["message"].toString());
   }
@@ -239,6 +292,7 @@ GCItem SteamCompanion::parseItem(const QJsonObject &obj) const {
   item.tradable = obj["tradable"].toBool();
   item.marketable = obj["marketable"].toBool();
   item.iconUrl = obj["icon_url"].toString();
+  item.inspectLink = obj["inspect_link"].toString();
   return item;
 }
 
@@ -289,4 +343,82 @@ void SteamCompanion::removeFromStorageUnit(const QString &casketId,
   sendCommand(QJsonObject{{"command", "remove_from_storage_unit"},
                           {"casket_id", casketId},
                           {"item_id", itemId}});
+}
+
+void SteamCompanion::requestTradeOffers() {
+  sendCommand(QJsonObject{{"command", "get_trade_offers"}});
+}
+
+void SteamCompanion::acceptTradeOffer(const QString &offerId) {
+  sendCommand(
+      QJsonObject{{"command", "accept_trade_offer"}, {"offer_id", offerId}});
+}
+
+void SteamCompanion::cancelTradeOffer(const QString &offerId) {
+  sendCommand(
+      QJsonObject{{"command", "cancel_trade_offer"}, {"offer_id", offerId}});
+}
+
+void SteamCompanion::sendTradeOffer(const QString &tradeUrl,
+                                    const QStringList &itemsToGive,
+                                    const QStringList &itemsToReceive,
+                                    const QString &message) {
+  QJsonArray give, recv;
+  for (const QString &id : itemsToGive)
+    give.append(id);
+  for (const QString &id : itemsToReceive)
+    recv.append(id);
+  sendCommand(QJsonObject{{"command", "send_trade_offer"},
+                           {"trade_url", tradeUrl},
+                           {"items_to_give", give},
+                           {"items_to_receive", recv},
+                           {"message", message}});
+}
+
+void SteamCompanion::unlockParentalView(const QString &pin) {
+  sendCommand(QJsonObject{{"command", "parental_unlock"}, {"pin", pin}});
+}
+
+void SteamCompanion::requestFloats(const QList<GCItem> &items) {
+  QJsonArray arr;
+  for (const GCItem &item : items) {
+    if (item.inspectLink.isEmpty() || item.paintWear > 0.0)
+      continue;
+    QJsonObject o;
+    o["id"] = item.id;
+    o["inspect_link"] = item.inspectLink;
+    arr.append(o);
+  }
+  if (arr.isEmpty())
+    return;
+  sendCommand(QJsonObject{{"command", "get_floats"}, {"items", arr}});
+}
+
+TradeOfferData
+SteamCompanion::parseTradeOffer(const QJsonObject &obj) const {
+  TradeOfferData offer;
+  offer.id = obj["id"].toString();
+  offer.partnerSteamId = obj["partner"].toString();
+  offer.message = obj["message"].toString();
+  offer.isOurOffer = obj["is_our_offer"].toBool();
+  offer.timeCreated = obj["time_created"].toVariant().toLongLong();
+  offer.state = obj["state"].toInt();
+
+  for (const QJsonValue &v : obj["items_to_give"].toArray()) {
+    QJsonObject o = v.toObject();
+    TradeItem item;
+    item.assetId = o["assetid"].toString();
+    item.marketHashName = o["market_hash_name"].toString();
+    item.appId = o["appid"].toInt(730);
+    offer.itemsToGive.append(item);
+  }
+  for (const QJsonValue &v : obj["items_to_receive"].toArray()) {
+    QJsonObject o = v.toObject();
+    TradeItem item;
+    item.assetId = o["assetid"].toString();
+    item.marketHashName = o["market_hash_name"].toString();
+    item.appId = o["appid"].toInt(730);
+    offer.itemsToReceive.append(item);
+  }
+  return offer;
 }

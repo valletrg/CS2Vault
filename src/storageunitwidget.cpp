@@ -1,5 +1,6 @@
 #include "storageunitwidget.h"
 
+#include <QDateTime>
 #include <QFont>
 #include <QGroupBox>
 #include <QHBoxLayout>
@@ -12,8 +13,11 @@
 #include <QVBoxLayout>
 
 StorageUnitWidget::StorageUnitWidget(SteamCompanion *companion,
-                                     PriceEmpireAPI *api, QWidget *parent)
-    : QWidget(parent), companion(companion), api(api) {
+                                     PriceEmpireAPI *api,
+                                     TradeHistoryManager *tradeHistoryManager,
+                                     QWidget *parent)
+    : QWidget(parent), companion(companion), api(api),
+      tradeHistoryManager(tradeHistoryManager) {
   setupUI();
 
   connect(companion, &SteamCompanion::gcReady, this, [this]() {
@@ -342,7 +346,36 @@ void StorageUnitWidget::onTransferComplete(const QString &action,
                                            const QString &casketId,
                                            const QString &itemId) {
   Q_UNUSED(casketId)
-  Q_UNUSED(itemId)
+
+  // Log to trade history
+  if (tradeHistoryManager) {
+    // Find the item name from our cached lists
+    QString itemName;
+    auto findItem = [&](const QList<GCItem> &list) -> QString {
+      for (const GCItem &item : list) {
+        if (item.id == itemId) {
+          return item.marketHashName.isEmpty() ? item.name
+                                               : item.marketHashName;
+        }
+      }
+      return {};
+    };
+
+    if (action == "added")
+      itemName = findItem(inventoryItems);
+    else
+      itemName = findItem(storageItems);
+
+    if (!itemName.isEmpty()) {
+      TradeHistoryEntry entry;
+      entry.itemName = itemName;
+      entry.type = (action == "added") ? "storage_in" : "storage_out";
+      entry.timestamp = QDateTime::currentMSecsSinceEpoch();
+      entry.storageUnit = storageCombo->currentText();
+      tradeHistoryManager->addEntry(entry);
+    }
+  }
+
   setStatus(action == "added" ? "Item moved to storage unit. Refreshing..."
                               : "Item moved to inventory. Refreshing...",
             "#38C878");

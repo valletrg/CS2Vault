@@ -3,6 +3,7 @@
 
 #include "priceempireapi.h"
 #include "steamcompanion.h"
+#include "tradehistory.h"
 #include <QComboBox>
 #include <QLabel>
 #include <QLineEdit>
@@ -17,6 +18,7 @@ class StorageUnitWidget : public QWidget {
 
 public:
   explicit StorageUnitWidget(SteamCompanion *companion, PriceEmpireAPI *api,
+                             TradeHistoryManager *tradeHistoryManager = nullptr,
                              QWidget *parent = nullptr);
   ~StorageUnitWidget();
 
@@ -40,6 +42,7 @@ private:
 
   QLabel *storageStatsLabel = nullptr;
   PriceEmpireAPI *api = nullptr;
+  TradeHistoryManager *tradeHistoryManager = nullptr;
   void updateStorageStats();
 
   SteamCompanion *companion;
