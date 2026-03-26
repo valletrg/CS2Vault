@@ -7,3 +7,5 @@ steamcompanion/refresh_token.txt
 cmake-build-*/
 .claude/
 research.md
+.cx/
+src/.cx/
