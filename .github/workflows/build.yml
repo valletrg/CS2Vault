@@ -75,8 +75,11 @@ jobs:
           npx pkg . --targets node18-win-x64 --output dist/steamcompanion.exe
           cd ..
 
+      - name: Install ZLIB
+        run: vcpkg install zlib:x64-windows
+
       - name: Configure
-        run: cmake -B build -G "NMake Makefiles" -DCMAKE_BUILD_TYPE=Release
+        run: cmake -B build -G "NMake Makefiles" -DCMAKE_BUILD_TYPE=Release -DCMAKE_TOOLCHAIN_FILE="C:/vcpkg/scripts/buildsystems/vcpkg.cmake" -DVCPKG_TARGET_TRIPLET=x64-windows
 
       - name: Build
         run: cmake --build build --config Release
