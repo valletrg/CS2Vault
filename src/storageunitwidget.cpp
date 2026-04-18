@@ -306,7 +306,10 @@ void StorageUnitWidget::onMoveToInventory() {
     return;
 
   setBusy(true);
-  setStatus(QString("Moving %1 item(s) to inventory...").arg(count), "#F0A500");
+  pendingTransfers = count;
+  totalTransfers = count;
+  setStatus(QString("Moving %1 item(s) to inventory... (0/%1)").arg(count),
+            "#F0A500");
 
   for (int row : rows) {
     if (row < storageItems.size())
@@ -333,8 +336,11 @@ void StorageUnitWidget::onMoveToStorageUnit() {
     return;
 
   setBusy(true);
-  setStatus(QString("Moving %1 item(s) to storage unit...").arg(count),
-            "#F0A500");
+  pendingTransfers = count;
+  totalTransfers = count;
+  setStatus(
+      QString("Moving %1 item(s) to storage unit... (0/%1)").arg(count),
+      "#F0A500");
 
   for (int row : rows) {
     if (row < inventoryItems.size())
@@ -376,8 +382,23 @@ void StorageUnitWidget::onTransferComplete(const QString &action,
     }
   }
 
-  setStatus(action == "added" ? "Item moved to storage unit. Refreshing..."
-                              : "Item moved to inventory. Refreshing...",
+  if (pendingTransfers > 0)
+    --pendingTransfers;
+
+  int done = totalTransfers - pendingTransfers;
+  if (pendingTransfers > 0) {
+    setStatus(
+        QString(action == "added" ? "Moving to storage unit... (%1/%2)"
+                                  : "Moving to inventory... (%1/%2)")
+            .arg(done)
+            .arg(totalTransfers),
+        "#F0A500");
+    return;
+  }
+
+  // All items in the batch are done — do a single refresh
+  setStatus(action == "added" ? "All items moved to storage unit. Refreshing..."
+                              : "All items moved to inventory. Refreshing...",
             "#38C878");
 
   QTimer::singleShot(1500, this, [this]() {

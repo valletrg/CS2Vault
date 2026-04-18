@@ -70,6 +70,8 @@ private:
   QList<GCItem> storageItems;
   QList<GCItem> inventoryItems;
   QString currentCasketId;
+  int pendingTransfers = 0;
+  int totalTransfers = 0;
 };
 
 #endif // STORAGEUNITWIDGET_H

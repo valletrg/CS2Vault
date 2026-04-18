@@ -562,6 +562,51 @@ function requestInventory() {
     });
 }
 
+// ── Transfer queue ────────────────────────────────────────────────────────────
+// The GC only processes one casket operation at a time; fire them sequentially.
+
+let transferQueue = [];
+let transferBusy = false;
+
+function enqueueTransfer(op, casketId, itemId) {
+    transferQueue.push({ op, casketId, itemId });
+    drainTransferQueue();
+}
+
+function drainTransferQueue() {
+    if (transferBusy || transferQueue.length === 0) return;
+
+    const { op, casketId, itemId } = transferQueue.shift();
+    transferBusy = true;
+
+    if (op === 'add') {
+        csgo.addToCasket(casketId, itemId);
+    } else {
+        csgo.removeFromCasket(casketId, itemId);
+    }
+
+    // Safety timeout — if GC never acks, unblock the queue after 10 s
+    const timeout = setTimeout(() => {
+        process.stderr.write(`[transfer] GC notification timeout for item ${itemId}\n`);
+        csgo.removeListener('itemCustomizationNotification', onNotification);
+        transferBusy = false;
+        drainTransferQueue();
+    }, 10000);
+
+    function onNotification() {
+        clearTimeout(timeout);
+        send('transfer_complete', {
+            action: op === 'add' ? 'added' : 'removed',
+            casket_id: casketId,
+            item_id: itemId
+        });
+        transferBusy = false;
+        drainTransferQueue();
+    }
+
+    csgo.once('itemCustomizationNotification', onNotification);
+}
+
 // ── Storage units ─────────────────────────────────────────────────────────────
 
 function requestStorageUnit(casketId) {
@@ -682,14 +727,7 @@ function handleCommand(msg) {
                 sendError('Not connected to GC yet');
                 return;
             }
-            csgo.addToCasket(msg.casket_id, msg.item_id);
-            csgo.once('itemCustomizationNotification', () => {
-                send('transfer_complete', {
-                    action: 'added',
-                    casket_id: msg.casket_id,
-                    item_id: msg.item_id
-                });
-            });
+            enqueueTransfer('add', msg.casket_id, msg.item_id);
             break;
 
         case 'remove_from_storage_unit':
@@ -701,14 +739,7 @@ function handleCommand(msg) {
                 sendError('Not connected to GC yet');
                 return;
             }
-            csgo.removeFromCasket(msg.casket_id, msg.item_id);
-            csgo.once('itemCustomizationNotification', () => {
-                send('transfer_complete', {
-                    action: 'removed',
-                    casket_id: msg.casket_id,
-                    item_id: msg.item_id
-                });
-            });
+            enqueueTransfer('remove', msg.casket_id, msg.item_id);
             break;
 
         case 'get_floats':
